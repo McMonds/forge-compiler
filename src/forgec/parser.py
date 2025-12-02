@@ -4,7 +4,8 @@ from forgec.diagnostics import DiagnosticEngine, Span
 from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt, 
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
-    StructDef, StructInstantiationExpr, FieldAccessExpr
+    StructDef, StructInstantiationExpr, FieldAccessExpr,
+    EnumDef, EnumVariant, EnumInstantiationExpr
 )
 
 class Parser:
@@ -16,15 +17,18 @@ class Parser:
     def parse(self) -> Program:
         functions = []
         structs = []
+        enums = []
         while not self._is_at_end():
             try:
                 if self._check(TokenType.FN):
                     functions.append(self._function_def())
                 elif self._check(TokenType.STRUCT):
                     structs.append(self._struct_def())
+                elif self._check(TokenType.ENUM):
+                    enums.append(self._enum_def())
                 else:
-                    # For now, we only allow top-level functions and structs
-                    self._error("Expected function or struct definition")
+                    # For now, we only allow top-level functions, structs, and enums
+                    self._error("Expected function, struct, or enum definition")
                     self._synchronize()
             except ParseError:
                 self._synchronize()
@@ -34,7 +38,7 @@ class Parser:
         if self.tokens:
             span = Span(self.tokens[0].span.start, self.tokens[-1].span.end, 0, 0)
             
-        return Program(span, functions, structs)
+        return Program(span, functions, structs, enums)
 
     # --- Declarations ---
 
@@ -84,6 +88,32 @@ class Parser:
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
         return StructDef(span, name, fields)
+
+    def _enum_def(self) -> EnumDef:
+        start_token = self._consume(TokenType.ENUM, "Expected 'enum'")
+        name = self._consume(TokenType.IDENTIFIER, "Expected enum name").lexeme
+        
+        self._consume(TokenType.LBRACE, "Expected '{' after enum name")
+        variants = []
+        
+        while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            variant_name = self._consume(TokenType.IDENTIFIER, "Expected variant name").lexeme
+            payload_type = None
+            
+            # Check for payload
+            if self._match(TokenType.LPAREN):
+                payload_type = self._consume(TokenType.IDENTIFIER, "Expected payload type").lexeme
+                self._consume(TokenType.RPAREN, "Expected ')' after payload type")
+            
+            variants.append(EnumVariant(variant_name, payload_type))
+            
+            if not self._check(TokenType.RBRACE):
+                self._consume(TokenType.COMMA, "Expected ',' between variants")
+        
+        self._consume(TokenType.RBRACE, "Expected '}' after enum variants")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return EnumDef(span, name, variants)
 
 
     def _block(self) -> List[Stmt]:
@@ -181,9 +211,15 @@ class Parser:
         
         if self._match(TokenType.IDENTIFIER):
             identifier_token = self.tokens[self.current-1]
+            
+            # Check for enum instantiation (e.g., Option::Some(42))
+            if self._check(TokenType.COLONCOLON):
+                return self._enum_instantiation(identifier_token)
+            
             # Check if this is a struct instantiation (e.g., Point { x: 10, y: 20 })
             if self._check(TokenType.LBRACE):
                 return self._struct_instantiation(identifier_token)
+            
             return VariableExpr(identifier_token.span, identifier_token.lexeme)
         
         if self._match(TokenType.IF):
@@ -232,6 +268,23 @@ class Parser:
         
         span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
         return StructInstantiationExpr(span, struct_name, field_values)
+
+    def _enum_instantiation(self, enum_name_token: Token) -> EnumInstantiationExpr:
+        # Option::Some(42) or Option::None
+        start_span = enum_name_token.span
+        enum_name = enum_name_token.lexeme
+        
+        self._consume(TokenType.COLONCOLON, "Expected '::' for enum variant")
+        variant_name = self._consume(TokenType.IDENTIFIER, "Expected variant name").lexeme
+        
+        payload = None
+        # Check for payload
+        if self._match(TokenType.LPAREN):
+            payload = self._expression()
+            self._consume(TokenType.RPAREN, "Expected ')' after payload")
+        
+        span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
+        return EnumInstantiationExpr(span, enum_name, variant_name, payload)
 
 
     # --- Helpers ---

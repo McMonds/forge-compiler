@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt,
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
-    StructDef, StructInstantiationExpr, FieldAccessExpr
+    StructDef, StructInstantiationExpr, FieldAccessExpr,
+    EnumDef, EnumInstantiationExpr
 )
 from forgec.diagnostics import DiagnosticEngine, Span
 
@@ -39,6 +40,7 @@ class TypeChecker:
         self.current_scope = self.global_scope
         self.current_function_return_type: Optional[str] = None
         self.struct_schemas: Dict[str, List[tuple[str, str]]] = {}  # struct_name -> [(field_name, field_type), ...]
+        self.enum_schemas: Dict[str, List] = {}  # enum_name -> [EnumVariant, ...]
 
 
     def check(self, program: Program):
@@ -48,6 +50,13 @@ class TypeChecker:
                 self.diagnostics.error(f"Struct '{struct.name}' is already defined", struct.span)
             else:
                 self.struct_schemas[struct.name] = struct.fields
+        
+        # Register all enum types
+        for enum in program.enums:
+            if enum.name in self.enum_schemas:
+                self.diagnostics.error(f"Enum '{enum.name}' is already defined", enum.span)
+            else:
+                self.enum_schemas[enum.name] = enum.variants
         
         # Second pass: Define all functions in global scope
         for func in program.functions:
@@ -157,7 +166,39 @@ class TypeChecker:
         if isinstance(expr, FieldAccessExpr):
             return self._check_field_access(expr)
 
+        if isinstance(expr, EnumInstantiationExpr):
+            return self._check_enum_instantiation(expr)
+
         return "void"
+
+    def _check_enum_instantiation(self, expr: EnumInstantiationExpr) -> str:
+        # Verify enum exists
+        if expr.enum_name not in self.enum_schemas:
+            self.diagnostics.error(f"Undefined enum '{expr.enum_name}'", expr.span)
+            return "error"
+        
+        # Verify variant exists
+        variants = self.enum_schemas[expr.enum_name]
+        variant = next((v for v in variants if v.name == expr.variant_name), None)
+        if not variant:
+            self.diagnostics.error(f"Enum '{expr.enum_name}' has no variant '{expr.variant_name}'", expr.span)
+            return "error"
+        
+        # Check payload
+        if variant.payload_type and not expr.payload:
+            self.diagnostics.error(f"Variant '{expr.variant_name}' requires a payload of type '{variant.payload_type}'", expr.span)
+        elif not variant.payload_type and expr.payload:
+            self.diagnostics.error(f"Variant '{expr.variant_name}' does not take a payload", expr.span)
+        elif variant.payload_type and expr.payload:
+            payload_type = self._check_expr(expr.payload)
+            if payload_type != variant.payload_type:
+                self.diagnostics.error(
+                    f"Variant '{expr.variant_name}' expects payload type '{variant.payload_type}', got '{payload_type}'",
+                    expr.payload.span
+                )
+        
+        return expr.enum_name  # Return the enum type name
+
 
     def _check_struct_instantiation(self, expr: StructInstantiationExpr) -> str:
         # Verify struct exists

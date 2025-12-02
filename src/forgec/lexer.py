@@ -37,6 +37,7 @@ class TokenType(Enum):
     LBRACE = auto()    # {
     RBRACE = auto()    # }
     COLON = auto()     # :
+    COLONCOLON = auto() # ::
     SEMICOLON = auto() # ;
     COMMA = auto()     # ,
     ARROW = auto()     # ->
@@ -88,6 +89,7 @@ class Lexer:
             (TokenType.RPAREN, r'\)'),
             (TokenType.LBRACE, r'\{'),
             (TokenType.RBRACE, r'\}'),
+            (TokenType.COLONCOLON, r'::'),
             (TokenType.COLON, r':'),
             (TokenType.SEMICOLON, r';'),
             (TokenType.COMMA, r','),

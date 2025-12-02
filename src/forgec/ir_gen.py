@@ -3,7 +3,8 @@ from llvmlite import ir
 from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt,
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
-    StructDef, StructInstantiationExpr, FieldAccessExpr
+    StructDef, StructInstantiationExpr, FieldAccessExpr,
+    EnumDef, EnumInstantiationExpr
 )
 from forgec.diagnostics import DiagnosticEngine
 
@@ -23,11 +24,19 @@ class IRGenerator:
         # Struct types
         self.struct_types: Dict[str, ir.Type] = {}  # struct_name -> LLVM struct type
         self.struct_schemas: Dict[str, list] = {}  # struct_name -> [(field_name, field_type), ...]
+        
+        # Enum types (tagged unions)
+        self.enum_types: Dict[str, ir.Type] = {}  # enum_name -> LLVM struct type { i8 tag, payload }
+        self.enum_schemas: Dict[str, list] = {}  # enum_name -> [EnumVariant, ...]
 
     def generate(self, program: Program) -> str:
         # Register struct types
         for struct in program.structs:
             self._register_struct_type(struct)
+        
+        # Register enum types
+        for enum in program.enums:
+            self._register_enum_type(enum)
         
         for func in program.functions:
             self._gen_function(func)
@@ -54,6 +63,20 @@ class IRGenerator:
         # Create LLVM struct type
         struct_type = ir.LiteralStructType(field_types)
         self.struct_types[struct.name] = struct_type
+
+    def _register_enum_type(self, enum: EnumDef):
+        # Store schema for later use
+        self.enum_schemas[enum.name] = enum.variants
+        
+        # Determine the largest payload type
+        # For now, we'll use i32 as the payload type (supports int)
+        # In a real compiler, we'd determine the union of all payload types
+        payload_type = self.int_type
+        
+        # Tagged union: { i8 tag, i32 payload }
+        # tag identifies which variant is active
+        enum_type = ir.LiteralStructType([ir.IntType(8), payload_type])
+        self.enum_types[enum.name] = enum_type
 
 
     def _gen_function(self, func: FunctionDef):
@@ -153,6 +176,9 @@ class IRGenerator:
         if isinstance(expr, FieldAccessExpr):
             return self._gen_field_access(expr)
 
+        if isinstance(expr, EnumInstantiationExpr):
+            return self._gen_enum_instantiation(expr)
+
         if isinstance(expr, IfExpr):
             return self._gen_if(expr)
 
@@ -208,6 +234,29 @@ class IRGenerator:
         
         # Extract the field
         return self.builder.extract_value(obj, field_idx, name=expr.field_name)
+
+    def _gen_enum_instantiation(self, expr: EnumInstantiationExpr) -> ir.Value:
+        enum_type = self.enum_types[expr.enum_name]
+        variants = self.enum_schemas[expr.enum_name]
+        
+        # Find variant index (tag)
+        tag = next(i for i, v in enumerate(variants) if v.name == expr.variant_name)
+        
+        # Create enum value (tagged union)
+        enum_val = ir.Constant(enum_type, ir.Undefined)
+        
+        # Set tag (first field)
+        enum_val = self.builder.insert_value(enum_val, ir.Constant(ir.IntType(8), tag), 0, name=f"{expr.enum_name}.tag")
+        
+        # Set payload (second field) if exists
+        if expr.payload:
+            payload_val = self._gen_expr(expr.payload)
+            enum_val = self.builder.insert_value(enum_val, payload_val, 1, name=f"{expr.enum_name}.{expr.variant_name}")
+        else:
+            # For unit variants, set payload to 0 (unused)
+            enum_val = self.builder.insert_value(enum_val, ir.Constant(self.int_type, 0), 1, name=f"{expr.enum_name}.{expr.variant_name}")
+        
+        return enum_val
 
 
     def _gen_if(self, expr: IfExpr) -> ir.Value:

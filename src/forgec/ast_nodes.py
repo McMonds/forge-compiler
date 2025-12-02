@@ -75,8 +75,26 @@ class FieldAccessExpr(Expr):
     object: Expr  # The struct instance
     field_name: str
 
+# Enum-related nodes
+@dataclass
+class EnumVariant:
+    name: str
+    payload_type: Optional[str]  # None for unit variants (e.g., None in Option)
+
+@dataclass
+class EnumDef(Stmt):
+    name: str
+    variants: List[EnumVariant]
+
+@dataclass
+class EnumInstantiationExpr(Expr):
+    enum_name: str
+    variant_name: str
+    payload: Optional[Expr]  # None for unit variants
+
 @dataclass
 class Program(ASTNode):
     functions: List[FunctionDef]
     structs: List[StructDef]  # Add struct definitions to program
+    enums: List[EnumDef]  # Add enum definitions to program
 

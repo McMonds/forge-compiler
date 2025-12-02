@@ -13,6 +13,9 @@ from tests import test_ir_gen
 from tests import test_parser_structs
 from tests import test_semantic_structs
 from tests import test_ir_gen_structs
+from tests import test_parser_enums
+from tests import test_semantic_enums
+from tests import test_ir_gen_enums
 
 def run_test(test_func):
     try:
@@ -36,6 +39,8 @@ def main():
         test_parser_structs.test_parser_struct_definition,
         test_parser_structs.test_parser_struct_instantiation,
         test_parser_structs.test_parser_field_access,
+        test_parser_enums.test_parser_enum_definition,
+        test_parser_enums.test_parser_enum_instantiation,
         test_semantic.test_semantic_basic_types,
         test_semantic.test_semantic_type_mismatch,
         test_semantic.test_semantic_undefined_variable,
@@ -49,6 +54,12 @@ def main():
         test_semantic_structs.test_semantic_undefined_field,
         test_ir_gen_structs.test_ir_gen_struct_basic,
         test_ir_gen_structs.test_ir_gen_struct_field_access,
+        test_semantic_enums.test_semantic_enum_definition,
+        test_semantic_enums.test_semantic_enum_undefined,
+        test_semantic_enums.test_semantic_enum_invalid_variant,
+        test_semantic_enums.test_semantic_enum_payload_mismatch,
+        test_semantic_enums.test_semantic_enum_missing_payload,
+        test_ir_gen_enums.test_ir_gen_enum_basic,
     ]
     
     passed = 0

@@ -1,0 +1,17 @@
+enum Option {
+    Some(int),
+    None
+}
+
+enum Result {
+    Ok(int),
+    Error(int)
+}
+
+fn main() {
+    let x = Option::Some(42);
+    let y = Option::None;
+    
+    let success = Result::Ok(100);
+    let failure = Result::Error(404);
+}
