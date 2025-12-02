@@ -5,7 +5,8 @@ from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt, 
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
-    EnumDef, EnumVariant, EnumInstantiationExpr
+    EnumDef, EnumVariant, EnumInstantiationExpr,
+    Pattern, EnumPattern, MatchArm, MatchExpr
 )
 
 class Parser:
@@ -119,7 +120,29 @@ class Parser:
     def _block(self) -> List[Stmt]:
         statements = []
         while not self._check(TokenType.RBRACE) and not self._is_at_end():
-            statements.append(self._declaration())
+            try:
+                if self._match(TokenType.LET):
+                    statements.append(self._let_declaration())
+                else:
+                    expr = self._expression()
+                    
+                    # Check for implicit return (last expression in block)
+                    if self._check(TokenType.RBRACE):
+                        statements.append(ExprStmt(expr.span, expr))
+                        break # Done
+                    
+                    # Check for optional semicolon for block expressions (if, match)
+                    if isinstance(expr, (IfExpr, MatchExpr)):
+                        # Optional semicolon
+                        self._match(TokenType.SEMICOLON)
+                        statements.append(ExprStmt(expr.span, expr))
+                    else:
+                        # Mandatory semicolon for other expressions
+                        self._consume(TokenType.SEMICOLON, "Expected ';' after expression")
+                        statements.append(ExprStmt(expr.span, expr))
+            except ParseError:
+                self._synchronize()
+                    
         self._consume(TokenType.RBRACE, "Expected '}' after block")
         return statements
 
@@ -217,13 +240,28 @@ class Parser:
                 return self._enum_instantiation(identifier_token)
             
             # Check if this is a struct instantiation (e.g., Point { x: 10, y: 20 })
+            # We need to be careful not to confuse this with a match expression scrutinee followed by {
+            # e.g. match x { ... } -> x { ... } looks like struct instantiation
+            # We look ahead to see if it looks like { field: ... } or {}
             if self._check(TokenType.LBRACE):
-                return self._struct_instantiation(identifier_token)
+                is_struct = False
+                # Look ahead
+                if self.tokens[self.current + 1].type == TokenType.RBRACE:
+                    is_struct = True # Empty struct Point {}
+                elif (self.tokens[self.current + 1].type == TokenType.IDENTIFIER and 
+                      self.tokens[self.current + 2].type == TokenType.COLON):
+                    is_struct = True # Point { x: ... }
+                
+                if is_struct:
+                    return self._struct_instantiation(identifier_token)
             
             return VariableExpr(identifier_token.span, identifier_token.lexeme)
         
         if self._match(TokenType.IF):
             return self._if_expression()
+        
+        if self._match(TokenType.MATCH):
+            return self._match_expression()
         
         if self._match(TokenType.LPAREN):
             expr = self._expression()
@@ -285,6 +323,53 @@ class Parser:
         
         span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
         return EnumInstantiationExpr(span, enum_name, variant_name, payload)
+
+    def _match_expression(self) -> MatchExpr:
+        # match value { Option::Some(x) => { ... }, Option::None => { ... } }
+        start_token = self.tokens[self.current - 1]
+        
+        scrutinee = self._expression()
+        
+        self._consume(TokenType.LBRACE, "Expected '{' after match scrutinee")
+        arms = []
+        
+        while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            # Parse pattern
+            pattern = self._parse_pattern()
+            
+            # Expect =>
+            self._consume(TokenType.FATARROW, "Expected '=>' after pattern")
+            
+            # Parse arm body (block)
+            self._consume(TokenType.LBRACE, "Expected '{' for match arm body")
+            body = self._block()
+            
+            arms.append(MatchArm(pattern.span, pattern, body))
+            
+            # Optional comma between arms
+            self._match(TokenType.COMMA)
+        
+        self._consume(TokenType.RBRACE, "Expected '}' after match arms")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return MatchExpr(span, scrutinee, arms)
+
+    def _parse_pattern(self) -> Pattern:
+        # For now, only enum patterns: Option::Some(x) or Option::None
+        start_token = self._consume(TokenType.IDENTIFIER, "Expected pattern")
+        enum_name = start_token.lexeme
+        
+        self._consume(TokenType.COLONCOLON, "Expected '::' in enum pattern")
+        variant_name = self._consume(TokenType.IDENTIFIER, "Expected variant name").lexeme
+        
+        binding = None
+        # Check for payload binding
+        if self._match(TokenType.LPAREN):
+            binding = self._consume(TokenType.IDENTIFIER, "Expected binding variable").lexeme
+            self._consume(TokenType.RPAREN, "Expected ')' after binding")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return EnumPattern(span, enum_name, variant_name, binding)
 
 
     # --- Helpers ---

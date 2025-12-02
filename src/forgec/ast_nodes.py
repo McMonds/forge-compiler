@@ -92,6 +92,27 @@ class EnumInstantiationExpr(Expr):
     variant_name: str
     payload: Optional[Expr]  # None for unit variants
 
+# Pattern matching nodes
+@dataclass
+class Pattern(ASTNode):
+    pass
+
+@dataclass
+class EnumPattern(Pattern):
+    enum_name: str
+    variant_name: str
+    binding: Optional[str]  # Variable name to bind payload to (e.g., "x" in Some(x))
+
+@dataclass
+class MatchArm(ASTNode):
+    pattern: Pattern
+    body: List[Stmt]  # Block of statements for this arm
+
+@dataclass
+class MatchExpr(Expr):
+    scrutinee: Expr  # The value being matched
+    arms: List[MatchArm]
+
 @dataclass
 class Program(ASTNode):
     functions: List[FunctionDef]

@@ -4,7 +4,8 @@ from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt,
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
-    EnumDef, EnumInstantiationExpr
+    EnumDef, EnumInstantiationExpr,
+    MatchExpr, EnumPattern
 )
 from forgec.diagnostics import DiagnosticEngine, Span
 
@@ -169,6 +170,86 @@ class TypeChecker:
         if isinstance(expr, EnumInstantiationExpr):
             return self._check_enum_instantiation(expr)
 
+        if isinstance(expr, MatchExpr):
+            return self._check_match(expr)
+
+        return "void"
+
+    def _check_match(self, expr: MatchExpr) -> str:
+        # Check scrutinee type
+        scrutinee_type = self._check_expr(expr.scrutinee)
+        
+        # Verify scrutinee is an enum
+        if scrutinee_type not in self.enum_schemas:
+            self.diagnostics.error(f"Match scrutinee must be an enum, got '{scrutinee_type}'", expr.scrutinee.span)
+            return "error"
+        
+        # Get enum variants
+        variants = self.enum_schemas[scrutinee_type]
+        covered_variants = set()
+        
+        # Check each arm
+        arm_types = []
+        for arm in expr.arms:
+            if isinstance(arm.pattern, EnumPattern):
+                # Verify pattern enum matches scrutinee
+                if arm.pattern.enum_name != scrutinee_type:
+                    self.diagnostics.error(
+                        f"Pattern enum '{arm.pattern.enum_name}' does not match scrutinee type '{scrutinee_type}'",
+                        arm.pattern.span
+                    )
+                    continue
+                
+                # Verify variant exists
+                variant = next((v for v in variants if v.name == arm.pattern.variant_name), None)
+                if not variant:
+                    self.diagnostics.error(
+                        f"Enum '{scrutinee_type}' has no variant '{arm.pattern.variant_name}'",
+                        arm.pattern.span
+                    )
+                    continue
+                
+                # Track covered variant
+                covered_variants.add(arm.pattern.variant_name)
+                
+                # If there's a binding, add it to scope for the arm body
+                if arm.pattern.binding:
+                    if not variant.payload_type:
+                        self.diagnostics.error(
+                            f"Variant '{arm.pattern.variant_name}' has no payload to bind",
+                            arm.pattern.span
+                        )
+                    else:
+                        # Create new scope for arm body with binding
+                        self.current_scope = SymbolTable(self.current_scope)
+                        self.current_scope.define(arm.pattern.binding, variant.payload_type, arm.pattern.span)
+                
+                # Check arm body
+                arm_type = "void"
+                for stmt in arm.body:
+                    if isinstance(stmt, ExprStmt):
+                        arm_type = self._check_expr(stmt.expression)
+                    else:
+                        self._check_stmt(stmt)
+                
+                arm_types.append(arm_type)
+                
+                # Pop scope if we created one
+                if arm.pattern.binding:
+                    self.current_scope = self.current_scope.parent
+        
+        # Exhaustiveness check
+        variant_names = {v.name for v in variants}
+        if covered_variants != variant_names:
+            missing = variant_names - covered_variants
+            self.diagnostics.error(
+                f"Non-exhaustive match: missing variants {missing}",
+                expr.span
+            )
+        
+        # All arms should have the same type (simplified)
+        if arm_types:
+            return arm_types[0]
         return "void"
 
     def _check_enum_instantiation(self, expr: EnumInstantiationExpr) -> str:

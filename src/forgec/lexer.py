@@ -41,6 +41,7 @@ class TokenType(Enum):
     SEMICOLON = auto() # ;
     COMMA = auto()     # ,
     ARROW = auto()     # ->
+    FATARROW = auto()  # =>
 
     # Special
     EOF = auto()
@@ -75,6 +76,7 @@ class Lexer:
             (TokenType.ENUM, r'\benum\b'),
             (TokenType.MATCH, r'\bmatch\b'),
             
+            (TokenType.FATARROW, r'=>'),
             (TokenType.ARROW, r'->'),
             (TokenType.EQEQ, r'=='),
             (TokenType.NEQ, r'!='),

@@ -4,7 +4,8 @@ from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt,
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
-    EnumDef, EnumInstantiationExpr
+    EnumDef, EnumInstantiationExpr,
+    MatchExpr, EnumPattern
 )
 from forgec.diagnostics import DiagnosticEngine
 
@@ -179,6 +180,9 @@ class IRGenerator:
         if isinstance(expr, EnumInstantiationExpr):
             return self._gen_enum_instantiation(expr)
 
+        if isinstance(expr, MatchExpr):
+            return self._gen_match(expr)
+
         if isinstance(expr, IfExpr):
             return self._gen_if(expr)
 
@@ -258,6 +262,115 @@ class IRGenerator:
         
         return enum_val
 
+
+        return enum_val
+
+    def _gen_match(self, expr: MatchExpr) -> ir.Value:
+        # 1. Generate scrutinee
+        scrutinee_val = self._gen_expr(expr.scrutinee)
+        
+        # 2. Extract tag
+        # scrutinee is {i8, payload}
+        tag_val = self.builder.extract_value(scrutinee_val, 0, name="match.tag")
+        
+        # 3. Create merge block
+        merge_block = self.current_func.append_basic_block(name="match.merge")
+        
+        # 4. Create switch
+        # We need a default block, but if exhaustive, it's unreachable
+        default_block = self.current_func.append_basic_block(name="match.default")
+        switch = self.builder.switch(tag_val, default_block)
+        
+        # Default block is unreachable
+        self.builder.position_at_start(default_block)
+        self.builder.unreachable()
+        
+        # 5. Generate arms
+        incoming_values = []
+        incoming_blocks = []
+        
+        # We need to know the enum type to map variants to tags
+        # We can infer it from scrutinee type, but we don't track types in IR gen perfectly yet.
+        # However, we have self.enum_schemas and self.enum_types.
+        # We need to find which enum this is.
+        # For now, let's assume we can find it by matching type structure?
+        # Or better, we can look up the enum name from the pattern!
+        # The first pattern must be an EnumPattern with the enum name.
+        
+        first_pattern = expr.arms[0].pattern
+        if not isinstance(first_pattern, EnumPattern):
+            raise Exception("Only enum patterns supported")
+            
+        enum_name = first_pattern.enum_name
+        variants = self.enum_schemas[enum_name]
+        
+        for arm in expr.arms:
+            pattern = arm.pattern
+            if not isinstance(pattern, EnumPattern):
+                continue
+                
+            # Find tag for this variant
+            tag = next(i for i, v in enumerate(variants) if v.name == pattern.variant_name)
+            
+            # Create block for this arm
+            arm_block = self.current_func.append_basic_block(name=f"match.{pattern.variant_name}")
+            switch.add_case(ir.Constant(ir.IntType(8), tag), arm_block)
+            
+            self.builder.position_at_start(arm_block)
+            
+            # Handle binding
+            if pattern.binding:
+                # Extract payload
+                payload_val = self.builder.extract_value(scrutinee_val, 1, name=f"match.payload.{pattern.binding}")
+                
+                # Store in symtab (allocate stack space)
+                # We need to know the type of the payload
+                # We can get it from the variant definition
+                variant = variants[tag]
+                # Map type name to IR type
+                payload_type = self.int_type # Default
+                if variant.payload_type == "bool":
+                    payload_type = self.bool_type
+                # TODO: Support other types
+                
+                ptr = self.builder.alloca(payload_type, name=pattern.binding)
+                self.builder.store(payload_val, ptr)
+                
+                # Add to scope (shadowing)
+                # We need to save old value if any?
+                # For simplicity, we just overwrite in func_symtab and restore later?
+                # Or better, IR generation doesn't need to restore because we are in a new block?
+                # But func_symtab is global for function.
+                # We should save/restore.
+                old_binding = self.func_symtab.get(pattern.binding)
+                self.func_symtab[pattern.binding] = ptr
+            
+            # Generate body
+            body_val = self._gen_block(arm.body)
+            
+            # Branch to merge
+            self.builder.branch(merge_block)
+            
+            incoming_values.append(body_val)
+            incoming_blocks.append(self.builder.block)
+            
+            # Restore binding
+            if pattern.binding:
+                if old_binding:
+                    self.func_symtab[pattern.binding] = old_binding
+                else:
+                    del self.func_symtab[pattern.binding]
+        
+        # 6. Merge block
+        self.builder.position_at_start(merge_block)
+        
+        # Phi node for result
+        # Assuming all arms return same type (int for now)
+        phi = self.builder.phi(self.int_type, name="match.result")
+        for val, block in zip(incoming_values, incoming_blocks):
+            phi.add_incoming(val, block)
+            
+        return phi
 
     def _gen_if(self, expr: IfExpr) -> ir.Value:
         # 1. Generate condition

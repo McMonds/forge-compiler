@@ -1,142 +1,153 @@
-# Forge Compiler (`forgec`)
+# ⚒️ Forge Compiler
 
-Forge is a statically-typed programming language designed for correctness and developer tooling. This repository contains the reference compiler, `forgec`, which targets LLVM IR.
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen?style=for-the-badge&logo=github)](https://github.com/monk/forge)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue?style=for-the-badge)](https://github.com/monk/forge)
+[![License](https://img.shields.io/badge/license-MIT-green?style=for-the-badge)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-yellow?style=for-the-badge&logo=python)](https://www.python.org/)
+[![LLVM](https://img.shields.io/badge/llvm-14+-red?style=for-the-badge&logo=llvm)](https://llvm.org/)
 
-## Project Structure
+> **Forge** is a modern, statically-typed compiled language designed to bridge the gap between low-level performance and high-level expressiveness. Built with Python and LLVM, it offers a clean syntax inspired by Rust and Python, featuring a powerful type system with algebraic data types and pattern matching.
 
-- `src/forgec`: Source code for the compiler (Lexer, Parser, Semantic Analysis, IR Gen).
-- `tests`: Unit and integration tests.
-- `examples`: Example Forge source files.
+---
 
-## Prerequisites
+## ✨ Key Features
 
+Forge is currently in **Phase II (The Expressive System)**, delivering a robust set of features for building complex applications.
+
+### 🛡️ Strong Static Typing
+Forge enforces type safety at compile time, preventing common runtime errors.
+- **Primitives**: `int` (32-bit signed), `bool` (true/false).
+- **Inference**: Smart type inference for variable bindings.
+
+### 📦 Algebraic Data Types (ADTs)
+Define expressive data structures that can represent complex states.
+
+**Structs (Product Types)**
+```rust
+struct Point {
+    x: int,
+    y: int
+}
+
+let p = Point { x: 10, y: 20 };
+let x_val = p.x;
+```
+
+**Enums (Sum Types)**
+```rust
+enum Option {
+    Some(int),
+    None
+}
+
+enum Result {
+    Ok(int),
+    Error(int)
+}
+```
+
+### 🎨 Pattern Matching
+Safely handle control flow and destructure data with exhaustive pattern matching.
+
+```rust
+fn safe_divide(a: int, b: int) -> int {
+    let result = if b == 0 {
+        Option::None
+    } else {
+        Option::Some(a / b)
+    };
+
+    match result {
+        Option::Some(val) => { val },
+        Option::None => { 0 } // Handle error case
+    }
+}
+```
+
+### ⚡ High-Performance Compilation
+- **LLVM Backend**: Compiles directly to optimized machine code via LLVM IR.
+- **Zero-Cost Abstractions**: Enums and structs are compiled to efficient memory representations (tagged unions).
+
+---
+
+## 🛠️ Architecture
+
+The Forge compiler (`forgec`) is built as a modular pipeline:
+
+1.  **Lexer**: Tokenizes source code into a stream of tokens (`src/forgec/lexer.py`).
+2.  **Parser**: Recursive descent parser with robust error recovery, building a typed AST (`src/forgec/parser.py`).
+3.  **Semantic Analyzer**: Performs symbol resolution, type checking, and exhaustiveness verification (`src/forgec/semantic.py`).
+4.  **IR Generator**: Emits optimized LLVM IR using `llvmlite`, handling memory layout and control flow (`src/forgec/ir_gen.py`).
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
 - **Python 3.10+**
-- **LLVM** (Required for `llvmlite`)
+- **LLVM 14+** (Required for `llvmlite`)
 
-## Setup
+### Installation
 
-1.  **Install Dependencies**:
-    ```bash
-    pip install -e .
-    ```
-    Or using a virtual environment:
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -e .
-    ```
-
-2.  **Run Tests**:
-    ```bash
-    python run_tests.py
-    ```
-
-## Usage
-
-Compile a Forge source file to LLVM IR:
+Clone the repository and install dependencies:
 
 ```bash
-python -m forgec.main examples/simple.ae
+git clone https://github.com/monk/forge.git
+cd forge
+pip install -e .
 ```
 
-This will generate:
-- `examples/simple.ll`: The LLVM IR output.
-- `examples/simple.json`: Visualization data (if `--visualize` is used).
+### Usage
 
-### Visualization
-
-To generate data for the dashboard:
-
+**Compile a file:**
 ```bash
-python -m forgec.main examples/simple.ae --visualize
+forgec compile examples/enums.ae
 ```
 
-## Docker Support
-
-To ensure a consistent environment (especially for Windows users), you can run the compiler in a Docker container.
-
-1.  **Build the Image**:
-    ```bash
-    docker build -t forgec .
-    ```
-
-2.  **Run the Compiler**:
-    ```bash
-    docker run --rm -v $(pwd)/examples:/app/examples forgec examples/simple.ae
-    ```
-    *Note: We mount the `examples` directory so the compiler can read the file and write the output back to your host machine.*
-
-3.  **Run Tests in Docker**:
-    ```bash
-    docker run --rm --entrypoint python forgec run_tests.py
-    ```
-
-
-## Project Structure
-
-- `compiler/src/aetherc`: Source code for the compiler (Lexer, Parser, Semantic Analysis, IR Gen).
-- `compiler/tests`: Unit and integration tests.
-- `compiler/examples`: Example Aether source files.
-
-## Prerequisites
-
-- **Python 3.10+**
-- **LLVM** (Required for `llvmlite`)
-
-## Setup
-
-1.  **Install Dependencies**:
-    ```bash
-    pip install -e .
-    ```
-    Or using a virtual environment:
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -e .
-    ```
-
-2.  **Run Tests**:
-    ```bash
-    python run_tests.py
-    ```
-
-## Usage
-
-Compile an Aether source file to LLVM IR:
-
+**Run from source:**
 ```bash
-python -m aetherc.main compile examples/simple.ae
+python -m forgec.main compile examples/simple.ae
 ```
 
-This will generate:
-- `examples/simple.ll`: The LLVM IR output.
-- `examples/simple.json`: Visualization data (if `--visualize` is used).
-
-### Visualization
-
-To generate data for the dashboard:
-
+**View Help:**
 ```bash
-python -m aetherc.main compile examples/simple.ae --visualize
+forgec --help
 ```
 
-## Docker Support
+---
 
-To ensure a consistent environment (especially for Windows users), you can run the compiler in a Docker container.
+## 🧪 Development & Testing
 
-1.  **Build the Image**:
-    ```bash
-    docker build -t aetherc .
-    ```
+We maintain a comprehensive test suite covering all compiler stages.
 
-2.  **Run the Compiler**:
-    ```bash
-    docker run --rm -v $(pwd)/examples:/app/examples aetherc compile examples/simple.ae
-    ```
-    *Note: We mount the `examples` directory so the compiler can read the file and write the output back to your host machine.*
+**Run all tests:**
+```bash
+python run_tests.py
+```
 
-3.  **Run Tests in Docker**:
-    ```bash
-    docker run --rm --entrypoint python aetherc run_tests.py
-    ```
+**Current Test Coverage:**
+- ✅ Lexer & Parser (Error recovery, precedence)
+- ✅ Semantic Analysis (Type checking, scoping)
+- ✅ IR Generation (Structs, Enums, Control Flow)
+- ✅ End-to-End Compilation
+
+---
+
+## 🗺️ Roadmap
+
+| Phase | Status | Features |
+|-------|--------|----------|
+| **I. Core Calculus** | ✅ Done | Primitives, Functions, Control Flow, Let Bindings |
+| **II. Expressive System** | ✅ Done | Structs, Enums, Pattern Matching, Type Inference |
+| **III. Abstractions** | ⏳ Next | Generics (`Struct<T>`), Traits (`impl Display`), Modules |
+| **IV. Safety** | 🔮 Future | Borrow Checker, Memory Safety, Concurrency |
+
+---
+
+## 📄 License
+
+This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
+
+---
+
+*Forged with ❤️ by the Forge Team.*

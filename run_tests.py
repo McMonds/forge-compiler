@@ -16,6 +16,9 @@ from tests import test_ir_gen_structs
 from tests import test_parser_enums
 from tests import test_semantic_enums
 from tests import test_ir_gen_enums
+from tests import test_parser_match
+from tests import test_semantic_match
+from tests import test_ir_gen_match
 
 def run_test(test_func):
     try:
@@ -41,6 +44,7 @@ def main():
         test_parser_structs.test_parser_field_access,
         test_parser_enums.test_parser_enum_definition,
         test_parser_enums.test_parser_enum_instantiation,
+        test_parser_match.test_parser_match_expression,
         test_semantic.test_semantic_basic_types,
         test_semantic.test_semantic_type_mismatch,
         test_semantic.test_semantic_undefined_variable,
@@ -60,6 +64,9 @@ def main():
         test_semantic_enums.test_semantic_enum_payload_mismatch,
         test_semantic_enums.test_semantic_enum_missing_payload,
         test_ir_gen_enums.test_ir_gen_enum_basic,
+        test_semantic_match.test_semantic_match_basic,
+        test_semantic_match.test_semantic_match_non_exhaustive,
+        test_ir_gen_match.test_ir_gen_match_basic,
     ]
     
     passed = 0
