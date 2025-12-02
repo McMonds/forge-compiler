@@ -1,0 +1,25 @@
+[project]
+name = "forgec"
+version = "0.2.0"
+description = "The Forge programming language compiler"
+authors = [{name = "Your Name"}]
+requires-python = ">=3.10"
+dependencies = [
+    "llvmlite",
+    "typer",
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "syrupy",
+]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-vv --durations=5"

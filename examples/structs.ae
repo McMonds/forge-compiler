@@ -1,0 +1,14 @@
+struct Point {
+    x: int,
+    y: int
+}
+
+fn main() {
+    let p1 = Point { x: 10, y: 20 };
+    let p2 = Point { x: 5, y: 15 };
+    
+    let sum_x = p1.x + p2.x;
+    let sum_y = p1.y + p2.y;
+    
+    let result = Point { x: sum_x, y: sum_y };
+}
