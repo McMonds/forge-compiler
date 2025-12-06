@@ -22,6 +22,8 @@ def compile(
         pipeline.run()
         console.print(f"[green]Successfully compiled {source_file}[/green]")
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(code=1)
 

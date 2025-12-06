@@ -660,7 +660,7 @@ forge/
 |-------|--------|----------|----------|
 | **I. Core Calculus** | ✅ **Complete** | Primitives, Functions, Control Flow | Q4 2024 |
 | **II. Type System** | ✅ **Complete** | Structs, Enums, Pattern Matching | Q4 2024 |
-| **III. Abstractions** | 🚧 **In Progress** | Generics, Traits, Modules | Q1 2025 |
+| **III. Abstractions** | 🚧 **In Progress** | Generics (✅), Traits (✅), Modules (📅) | Q1 2025 |
 | **IV. Safety** | 📅 **Planned** | Borrow Checker, Memory Safety | Q2 2025 |
 | **V. Concurrency** | 📅 **Planned** | Async/Await, Channels | Q3 2025 |
 

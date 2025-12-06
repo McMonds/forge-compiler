@@ -2,12 +2,13 @@ from typing import List, Optional
 from forgec.lexer import Lexer, Token, TokenType
 from forgec.diagnostics import DiagnosticEngine, Span
 from forgec.ast_nodes import (
-    Program, FunctionDef, Stmt, LetStmt, ExprStmt, 
-    Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
+    Program, FunctionDef, Stmt, LetStmt, ExprStmt, ReturnStmt, 
+    Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr, MethodCallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
     EnumDef, EnumVariant, EnumInstantiationExpr,
     Pattern, EnumPattern, MatchArm, MatchExpr,
-    TypeParameter, TypeRef
+    TypeParameter, TypeRef,
+    TraitDef, ImplBlock, TraitMethod  # NEW
 )
 
 class Parser:
@@ -20,6 +21,8 @@ class Parser:
         functions = []
         structs = []
         enums = []
+        traits = []
+        impls = []
         while not self._is_at_end():
             try:
                 if self._check(TokenType.FN):
@@ -28,9 +31,13 @@ class Parser:
                     structs.append(self._struct_def())
                 elif self._check(TokenType.ENUM):
                     enums.append(self._enum_def())
+                elif self._check(TokenType.TRAIT):
+                    traits.append(self._trait_def())
+                elif self._check(TokenType.IMPL):
+                    impls.append(self._impl_block())
                 else:
                     # For now, we only allow top-level functions, structs, and enums
-                    self._error("Expected function, struct, or enum definition")
+                    self._error("Expected function, struct, enum, trait, or impl definition")
                     self._synchronize()
             except ParseError:
                 self._synchronize()
@@ -40,7 +47,7 @@ class Parser:
         if self.tokens:
             span = Span(self.tokens[0].span.start, self.tokens[-1].span.end, 0, 0)
             
-        return Program(span, functions, structs, enums)
+        return Program(span, structs, enums, traits, impls, functions)
 
     # --- Declarations ---
 
@@ -48,31 +55,41 @@ class Parser:
         start_token = self._consume(TokenType.FN, "Expected 'fn'")
         name = self._consume(TokenType.IDENTIFIER, "Expected function name").lexeme
         
-        # Parse type parameters: fn name<T, U>(...)
+        # Parse type parameters: fn foo<T>(...)
         type_params = self._parse_type_params()
         
         self._consume(TokenType.LPAREN, "Expected '(' after function name")
         params = []
+        
+        # Check for 'self' as first parameter
+        if self._match(TokenType.SELF):
+            # Treat 'self' as a parameter named "self" with type "Self"
+            # In a real compiler, we'd handle this more specifically
+            params.append(("self", TypeRef(start_token.span, "Self", [])))
+            if self._check(TokenType.COMMA):
+                self._advance()
+        
         if not self._check(TokenType.RPAREN):
             while True:
                 param_name = self._consume(TokenType.IDENTIFIER, "Expected parameter name").lexeme
                 self._consume(TokenType.COLON, "Expected ':' after parameter name")
-                param_type = self._parse_type_ref()  # Use TypeRef instead of string
+                param_type = self._parse_type_ref()
                 params.append((param_name, param_type))
+                
                 if not self._match(TokenType.COMMA):
                     break
+        
         self._consume(TokenType.RPAREN, "Expected ')' after parameters")
-
-        # Parse return type
-        return_type_ref = TypeRef(start_token.span, "void", [])  # Default void
+        
+        return_type = TypeRef(start_token.span, "void", [])
         if self._match(TokenType.ARROW):
-            return_type_ref = self._parse_type_ref()
-
+            return_type = self._parse_type_ref()
+            
         self._consume(TokenType.LBRACE, "Expected '{' before function body")
         body = self._block()
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return FunctionDef(span, name, type_params, params, return_type_ref, body)
+        return FunctionDef(span, name, type_params, params, return_type, body)
 
     def _struct_def(self) -> StructDef:
         start_token = self._consume(TokenType.STRUCT, "Expected 'struct'")
@@ -121,13 +138,81 @@ class Parser:
             variant_span = Span(variant_start.start, self.tokens[self.current-1].span.end, variant_start.line, 0)
             variants.append(EnumVariant(variant_span, variant_name, payload_type_ref))
             
-            if not self._check(TokenType.RBRACE):
-                self._consume(TokenType.COMMA, "Expected ',' between variants")
+            if not self._match(TokenType.COMMA):
+                break
         
         self._consume(TokenType.RBRACE, "Expected '}' after enum variants")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
         return EnumDef(span, name, type_params, variants)
+
+    def _trait_def(self) -> TraitDef:
+        """Parse: trait Name { fn method(self) -> type; }"""
+        start_token = self._consume(TokenType.TRAIT, "Expected 'trait'")
+        name = self._consume(TokenType.IDENTIFIER, "Expected trait name").lexeme
+        
+        self._consume(TokenType.LBRACE, "Expected '{'")
+        methods = []
+        while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            methods.append(self._parse_trait_method())
+        self._consume(TokenType.RBRACE, "Expected '}'")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return TraitDef(span, name, methods)
+
+    def _parse_trait_method(self) -> TraitMethod:
+        """Parse method signature: fn name(self) -> type;"""
+        start_token = self._consume(TokenType.FN, "Expected 'fn'")
+        name = self._consume(TokenType.IDENTIFIER, "Expected method name").lexeme
+        
+        self._consume(TokenType.LPAREN, "Expected '('")
+        params = []
+        # First parameter must be 'self'
+        if self._match(TokenType.SELF):
+            params.append(("self", TypeRef(start_token.span, "Self", [])))
+            if self._check(TokenType.COMMA):
+                self._advance()
+        
+        # Additional parameters
+        while not self._check(TokenType.RPAREN) and not self._is_at_end():
+            param_name = self._consume(TokenType.IDENTIFIER, "Expected parameter").lexeme
+            self._consume(TokenType.COLON, "Expected ':'")
+            param_type = self._parse_type_ref()
+            params.append((param_name, param_type))
+            
+            if not self._match(TokenType.COMMA):
+                break
+        
+        self._consume(TokenType.RPAREN, "Expected ')'")
+        
+        return_type = TypeRef(start_token.span, "void", [])
+        if self._match(TokenType.ARROW):
+            return_type = self._parse_type_ref()
+        
+        self._consume(TokenType.SEMICOLON, "Expected ';' after method signature")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return TraitMethod(span, name, params, return_type)
+
+    def _impl_block(self) -> ImplBlock:
+        """Parse: impl TraitName for TypeName { ... }"""
+        start_token = self._consume(TokenType.IMPL, "Expected 'impl'")
+        trait_name = self._consume(TokenType.IDENTIFIER, "Expected trait name").lexeme
+        
+        self._consume(TokenType.FOR, "Expected 'for'")
+        type_name = self._consume(TokenType.IDENTIFIER, "Expected type name").lexeme
+        
+        # Parse type arguments if generic: impl Display for Box<int>
+        type_args = self._parse_type_args()
+        
+        self._consume(TokenType.LBRACE, "Expected '{'")
+        methods = []
+        while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            methods.append(self._function_def())  # Reuse function parsing
+        self._consume(TokenType.RBRACE, "Expected '}'")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return ImplBlock(span, trait_name, type_name, type_args, methods)
 
 
     def _block(self) -> List[Stmt]:
@@ -136,6 +221,8 @@ class Parser:
             try:
                 if self._match(TokenType.LET):
                     statements.append(self._let_declaration())
+                elif self._match(TokenType.RETURN):
+                    statements.append(self._return_stmt())
                 else:
                     expr = self._expression()
                     
@@ -184,9 +271,23 @@ class Parser:
         return LetStmt(span, name, initializer, type_annotation)
 
     def _statement(self) -> Stmt:
+        if self._match(TokenType.RETURN):
+            return self._return_stmt()
         expr = self._expression()
         self._consume(TokenType.SEMICOLON, "Expected ';' after expression")
         return ExprStmt(expr.span, expr)
+
+    def _return_stmt(self) -> ReturnStmt:
+        start_token = self.tokens[self.current - 1]
+        value = None
+        if not self._check(TokenType.SEMICOLON):
+            value = self._expression()
+        
+        self._consume(TokenType.SEMICOLON, "Expected ';' after return value")
+        
+        end_span = self.tokens[self.current-1].span
+        span = Span(start_token.span.start, end_span.end, start_token.span.line, 0)
+        return ReturnStmt(span, value)
 
     # --- Expressions ---
 
@@ -228,13 +329,32 @@ class Parser:
     def _postfix(self) -> Expr:
         expr = self._primary()
         
-        # Handle field access (e.g., p.x)
+        # Handle field access (e.g., p.x) and method calls (e.g., p.show())
         while self._match(TokenType.DOT):
-            field_name = self._consume(TokenType.IDENTIFIER, "Expected field name after '.'").lexeme
-            span = Span(expr.span.start, self.tokens[self.current-1].span.end, expr.span.line, 0)
-            expr = FieldAccessExpr(span, expr, field_name)
+            field_name = self._consume(TokenType.IDENTIFIER, "Expected field/method name after '.'").lexeme
+            
+            if self._check(TokenType.LPAREN):
+                # Method call: expr.method(...)
+                args = self._parse_args()
+                span = Span(expr.span.start, self.tokens[self.current-1].span.end, expr.span.line, 0)
+                expr = MethodCallExpr(span, expr, field_name, args)
+            else:
+                # Field access: expr.field
+                span = Span(expr.span.start, self.tokens[self.current-1].span.end, expr.span.line, 0)
+                expr = FieldAccessExpr(span, expr, field_name)
         
         return expr
+
+    def _parse_args(self) -> List[Expr]:
+        self._consume(TokenType.LPAREN, "Expected '('")
+        args = []
+        if not self._check(TokenType.RPAREN):
+            while True:
+                args.append(self._expression())
+                if not self._match(TokenType.COMMA):
+                    break
+        self._consume(TokenType.RPAREN, "Expected ')'")
+        return args
 
 
     def _primary(self) -> Expr:
@@ -251,15 +371,12 @@ class Parser:
             # Check for type arguments first: Box<int>
             type_args = self._parse_type_args()
             
-           # Check for enum instantiation (e.g., Option<int>::Some(42))
+            # Check for enum instantiation (e.g., Option<int>::Some(42))
             if self._check(TokenType.COLONCOLON):
                 # Create a temporary token with type args for _enum_instantiation
                 return self._enum_instantiation(identifier_token, type_args)
             
             # Check if this is a struct instantiation (e.g., Box<int> { value: 10 })
-            # We need to be careful not to confuse this with a match expression scrutinee followed by {
-            # e.g. match x { ... } -> x { ... } looks like struct instantiation
-            # We look ahead to see if it looks like { field: ... } or {}
             if self._check(TokenType.LBRACE):
                 is_struct = False
                 # Look ahead
@@ -276,7 +393,16 @@ class Parser:
             if type_args:
                 raise self._error("Type arguments are only allowed for struct or enum instantiations here.")
 
+            # Check for function call: foo(...)
+            if self._check(TokenType.LPAREN):
+                args = self._parse_args()
+                span = Span(identifier_token.span.start, self.tokens[self.current-1].span.end, identifier_token.span.line, 0)
+                return CallExpr(span, identifier_token.lexeme, args)
+
             return VariableExpr(identifier_token.span, identifier_token.lexeme)
+            
+        if self._match(TokenType.SELF):
+            return VariableExpr(self.tokens[self.current-1].span, "self")
         
         if self._match(TokenType.IF):
             return self._if_expression()
@@ -445,19 +571,31 @@ class Parser:
             ]:
                 return
             
+
             self._advance()
     
     # --- Generic Type System Parsing ---
     
     def _parse_type_params(self) -> List[TypeParameter]:
-        """Parse type parameters: <T, U, V>. Returns empty list if no type parameters."""
+        # <T, U> or <T: Display>
         if not self._match(TokenType.LT):
             return []
         
         params = []
-        while True:
-            param_token = self._consume(TokenType.IDENTIFIER, "Expected type parameter name")
-            params.append(TypeParameter(param_token.span, param_token.lexeme))
+        while not self._check(TokenType.GT) and not self._is_at_end():
+            param_name_token = self._consume(TokenType.IDENTIFIER, "Expected type parameter name")
+            param_name = param_name_token.lexeme
+            
+            # Parse trait bounds: T: Display + Clone
+            bounds = []
+            if self._match(TokenType.COLON):
+                while True:
+                    bound_name = self._consume(TokenType.IDENTIFIER, "Expected trait name in bound").lexeme
+                    bounds.append(bound_name)
+                    if not self._match(TokenType.PLUS):
+                        break
+            
+            params.append(TypeParameter(param_name_token.span, param_name, bounds))
             
             if not self._match(TokenType.COMMA):
                 break

@@ -16,6 +16,10 @@ class TokenType(Enum):
     STRUCT = auto()
     ENUM = auto()
     MATCH = auto()
+    TRAIT = auto()
+    IMPL = auto()
+    FOR = auto()
+    SELF = auto()
 
     # Literals
     INTEGER = auto()
@@ -75,6 +79,10 @@ class Lexer:
             (TokenType.STRUCT, r'\bstruct\b'),
             (TokenType.ENUM, r'\benum\b'),
             (TokenType.MATCH, r'\bmatch\b'),
+            (TokenType.TRAIT, r'\btrait\b'),
+            (TokenType.IMPL, r'\bimpl\b'),
+            (TokenType.FOR, r'\bfor\b'),
+            (TokenType.SELF, r'\bself\b'),
             
             (TokenType.FATARROW, r'=>'),
             (TokenType.ARROW, r'->'),

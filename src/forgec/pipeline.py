@@ -46,7 +46,7 @@ class CompilerPipeline:
             raise Exception("Semantic analysis failed")
 
         # 4. IR Generation
-        ir_gen = IRGenerator(self.diagnostics)
+        ir_gen = IRGenerator(program, self.diagnostics)
         ir_code = ir_gen.generate(program)
         self.artifacts["ir"] = ir_code
 

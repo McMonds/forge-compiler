@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Union, Any
 from forgec.diagnostics import Span
 
@@ -12,7 +12,8 @@ class ASTNode:
 class TypeParameter(ASTNode):
     """Generic type parameter like 'T' in Box<T>"""
     name: str
-    # Future: bounds like T: Display
+    name: str
+    bounds: List[str] = field(default_factory=list)  # e.g., ["Display"]
 
 @dataclass  
 class TypeRef(ASTNode):
@@ -29,7 +30,7 @@ class TypeRef(ASTNode):
 # Expressions
 @dataclass
 class Expr(ASTNode):
-    pass
+    inferred_type: Optional[str] = field(default=None, init=False)  # Populated by Semantic Analysis
 
 @dataclass
 class LiteralExpr(Expr):
@@ -52,6 +53,12 @@ class CallExpr(Expr):
     arguments: List[Expr]
 
 @dataclass
+class MethodCallExpr(Expr):
+    receiver: Expr
+    method_name: str
+    arguments: List[Expr]
+
+@dataclass
 class IfExpr(Expr):
     condition: Expr
     then_branch: List['Stmt'] # Block is a list of statements
@@ -70,7 +77,11 @@ class LetStmt(Stmt):
 
 @dataclass
 class ExprStmt(Stmt):
-    expression: Expr
+    expression: 'Expr'
+
+@dataclass
+class ReturnStmt(Stmt):
+    value: Optional['Expr']
 
 @dataclass
 class FunctionDef(Stmt):
@@ -137,11 +148,35 @@ class MatchArm(ASTNode):
 @dataclass
 class MatchExpr(Expr):
     scrutinee: Expr  # The value being matched
-    arms: List[MatchArm]
+    variants: List[EnumVariant]
+
+# --- Traits ---
+
+@dataclass
+class TraitMethod(ASTNode):
+    """Method signature in a trait"""
+    name: str
+    params: List[tuple[str, TypeRef]]  # First param should be 'self'
+    return_type: TypeRef
+
+@dataclass
+class TraitDef(Stmt):
+    """Trait definition: trait Display { fn show(self) -> int; }"""
+    name: str
+    methods: List[TraitMethod]
+
+@dataclass
+class ImplBlock(Stmt):
+    """Trait implementation: impl Display for Point { ... }"""
+    trait_name: str
+    type_name: str           # Type implementing the trait
+    type_args: List[TypeRef] # For generic types: impl Display for Box<int>
+    methods: List[FunctionDef]
 
 @dataclass
 class Program(ASTNode):
+    structs: List[StructDef]
+    enums: List[EnumDef]
+    traits: List[TraitDef]    # NEW
+    impls: List[ImplBlock]    # NEW
     functions: List[FunctionDef]
-    structs: List[StructDef]  # Add struct definitions to program
-    enums: List[EnumDef]  # Add enum definitions to program
-

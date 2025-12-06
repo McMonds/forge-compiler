@@ -1,12 +1,13 @@
 from typing import Dict, Any
 from llvmlite import ir
 from forgec.ast_nodes import (
-    Program, FunctionDef, Stmt, LetStmt, ExprStmt,
-    Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
+    Program, FunctionDef, Stmt, LetStmt, ExprStmt, ReturnStmt,
+    Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr, MethodCallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
     EnumDef, EnumInstantiationExpr,
     MatchExpr, EnumPattern,
-    TypeParameter, TypeRef  # NEW: For generics
+    TypeParameter, TypeRef,
+    ImplBlock
 )
 from forgec.diagnostics import DiagnosticEngine
 
@@ -36,8 +37,16 @@ class IRGenerator:
         # Example: ("Box", ("int",)) -> %Box_int = { i32 }
         
         # Store original definitions for monomorphization
+        # Store original definitions for monomorphization
         self.struct_defs: Dict[str, StructDef] = {s.name: s for s in program.structs}
         self.enum_defs: Dict[str, EnumDef] = {e.name: e for e in program.enums}
+        
+        self.trait_impls: Dict[tuple, ImplBlock] = {}
+        self.current_self_type: Optional[ir.Type] = None # Track 'Self' type for impl blocks
+        self.enum_defs: Dict[str, EnumDef] = {e.name: e for e in program.enums}
+        
+        # NEW: Traits system
+        self.trait_impls: Dict[tuple, ImplBlock] = {}  # (trait_name, type_name) -> ImplBlock
 
     def generate(self, program: Program) -> str:
         # Register struct types
@@ -47,10 +56,54 @@ class IRGenerator:
         # Register enum types
         for enum in program.enums:
             self._register_enum_type(enum)
+            
+        # Register impl blocks
+        for impl in program.impls:
+            # Store for resolution: (Trait, Type) -> Impl
+            # Note: For generic types, we might need more complex key, but for now use string representation
+            if impl.type_args:
+                type_name = f"{impl.type_name}<{', '.join(str(t) for t in impl.type_args)}>"
+            else:
+                type_name = impl.type_name
+            self.trait_impls[(impl.trait_name, type_name)] = impl
+            
+            # Generate code for methods
+            self._gen_impl_block(impl)
         
         for func in program.functions:
             self._gen_function(func)
         return str(self.module)
+
+    def _gen_impl_block(self, impl: ImplBlock):
+        """Generate code for methods in an impl block"""
+        # For now, we only support non-generic impls or we rely on monomorphization
+        # If it's a generic impl (impl<T> Display for Box<T>), we skip generation here
+        # and generate on demand during monomorphization (similar to generic structs)
+        # BUT for Phase III simplified, we might assume concrete types or handle simple generics
+        
+        # Name mangling: {TypeName}_{TraitName}_{MethodName}
+        # e.g. Point_Display_show
+        
+        type_name = impl.type_name
+        if impl.type_args:
+            # If generic, we might skip if it's a template, or generate if it's a concrete instantiation
+            # For now, let's assume concrete instantiation or skip
+            pass 
+            
+        # Resolve Self type
+        if type_name in self.struct_types:
+            self.current_self_type = self.struct_types[type_name]
+        elif type_name in self.enum_types:
+            self.current_self_type = self.enum_types[type_name]
+        else:
+            # Fallback or error? For now, assume it's handled elsewhere or primitive
+            pass
+            
+        for method in impl.methods:
+            mangled_name = f"{type_name}_{impl.trait_name}_{method.name}"
+            self._gen_function(method, name_override=mangled_name)
+            
+        self.current_self_type = None
 
     def _register_struct_type(self, struct: StructDef):
         # Skip generic structs - they'll be monomorphized on demand
@@ -85,19 +138,18 @@ class IRGenerator:
         self.enum_types[enum.name] = enum_type
 
 
-    def _gen_function(self, func: FunctionDef):
-        # Define function type
-        # Simplified: assuming int args and return for now, or void
-        arg_types = [self.int_type for _ in func.params] # TODO: Map types correctly
-        
-        ret_type = self.void_type
-        if func.return_type == "int":
-            ret_type = self.int_type
-        elif func.return_type == "bool":
-            ret_type = self.bool_type
-
+    def _gen_function(self, func: FunctionDef, name_override: str = None):
+        # Determine function type
+        arg_types = []
+        for _, arg_type_ref in func.params:
+            arg_types.append(self._typeref_to_ir_type(arg_type_ref))
+            
+        ret_type = self._typeref_to_ir_type(func.return_type)
         func_type = ir.FunctionType(ret_type, arg_types)
-        ir_func = ir.Function(self.module, func_type, name=func.name)
+        
+        # Create function
+        func_name = name_override if name_override else func.name
+        ir_func = ir.Function(self.module, func_type, name=func_name)
         
         # Create entry block
         block = ir_func.append_basic_block(name="entry")
@@ -111,7 +163,7 @@ class IRGenerator:
             arg.name = arg_name
             # Allocate space for arg to be mutable (if we want mutable args)
             # For now, just map name to value
-            ptr = self.builder.alloca(self.int_type, name=arg_name)
+            ptr = self.builder.alloca(arg.type, name=arg_name)
             self.builder.store(arg, ptr)
             self.func_symtab[arg_name] = ptr
 
@@ -128,6 +180,15 @@ class IRGenerator:
             self._gen_let(stmt)
         elif isinstance(stmt, ExprStmt):
             self._gen_expr(stmt.expression)
+        elif isinstance(stmt, ReturnStmt):
+            self._gen_return_stmt(stmt)
+
+    def _gen_return_stmt(self, stmt: ReturnStmt):
+        if stmt.value:
+            val = self._gen_expr(stmt.value)
+            self.builder.ret(val)
+        else:
+            self.builder.ret_void()
 
     def _gen_let(self, stmt: LetStmt):
         # Calculate initializer value
@@ -191,6 +252,15 @@ class IRGenerator:
         if isinstance(expr, IfExpr):
             return self._gen_if(expr)
 
+        if isinstance(expr, CallExpr):
+            return self._gen_call_expression(expr)
+
+        if isinstance(expr, CallExpr):
+            return self._gen_call_expression(expr)
+
+        if isinstance(expr, MethodCallExpr):
+            return self._gen_method_call_expr(expr)
+
         return ir.Constant(self.int_type, 0) # Fallback
 
     def _gen_struct_instantiation(self, expr: StructInstantiationExpr) -> ir.Value:
@@ -203,7 +273,7 @@ class IRGenerator:
         else:
             # Non-generic: Point { x: 10, y: 20 }
             struct_type = self.struct_types[expr.struct_name]
-            schema = self.struct_schemas[expr.struct_name]
+            schema = self.struct_defs[expr.struct_name].fields
         
         # Create an undefined struct value
         struct_val = ir.Constant(struct_type, ir.Undefined)
@@ -221,33 +291,24 @@ class IRGenerator:
         # Get the struct value
         obj = self._gen_expr(expr.object)
         
-        # Determine the struct type from the object
-        # We need to know which struct this is to find the field index
-        # For now, we'll extract from the variable if it's a VariableExpr
-        if isinstance(expr.object, VariableExpr):
-            # Load the struct from memory
-            ptr = self.func_symtab.get(expr.object.name)
-            if ptr:
-                obj = self.builder.load(ptr)
+        # Use inferred type from semantic analysis
+        struct_full_name = expr.object.inferred_type
+        if not struct_full_name:
+             raise Exception(f"Codegen error: No inferred type for field access on '{expr.object}'")
+             
+        # Extract base name (e.g. "Box" from "Box<int>")
+        struct_name = struct_full_name.split('<')[0]
         
-        # Find the field index
-        # We need the struct type name - this is a limitation of our current approach
-        # In a real compiler, we'd track types through the IR generation
-        # For now, we'll infer from the loaded value's type
-        struct_type = obj.type
+        if struct_name not in self.struct_defs:
+             raise Exception(f"Codegen error: Unknown struct '{struct_name}'")
+             
+        schema = self.struct_defs[struct_name]
         
-        # Find which struct this type corresponds to
-        struct_name = None
-        for name, stype in self.struct_types.items():
-            if stype == struct_type:
-                struct_name = name
-                break
-        
-        if not struct_name:
-            raise Exception(f"Could not determine struct type for field access")
-        
-        schema = self.struct_schemas[struct_name]
-        field_idx = next(i for i, (name, _) in enumerate(schema) if name == expr.field_name)
+        # Find field index
+        try:
+            field_idx = next(i for i, (name, _) in enumerate(schema.fields) if name == expr.field_name)
+        except StopIteration:
+            raise Exception(f"Codegen error: Field '{expr.field_name}' not found in '{struct_name}'")
         
         # Extract the field
         return self.builder.extract_value(obj, field_idx, name=expr.field_name)
@@ -285,6 +346,62 @@ class IRGenerator:
             tagged_union = self.builder.insert_value(tagged_union, zero, 1)
         
         return tagged_union
+
+    def _gen_call_expression(self, expr: CallExpr) -> ir.Value:
+        # 1. Look up function
+        if expr.callee not in self.module.globals:
+             # Should have been caught by semantic analysis
+             raise Exception(f"Codegen error: Undefined function {expr.callee}")
+             
+        func = self.module.globals[expr.callee]
+        
+        # 2. Generate arguments
+        args = [self._gen_expr(arg) for arg in expr.arguments]
+        
+        # 3. Call
+        return self.builder.call(func, args)
+
+    def _gen_method_call_expr(self, expr: MethodCallExpr) -> ir.Value:
+        # 1. Generate receiver
+        receiver_val = self._gen_expr(expr.receiver)
+        
+        # 2. Determine receiver type
+        # We rely on Semantic Analysis having populated inferred_type
+        receiver_type = expr.receiver.inferred_type
+        if not receiver_type:
+             raise Exception(f"Codegen error: No inferred type for receiver in method call '{expr.method_name}'")
+             
+        # 3. Find trait implementation
+        # We need to find the mangled name: {TypeName}_{TraitName}_{MethodName}
+        # We iterate trait_impls to find the trait that this type implements and has this method
+        
+        target_func_name = None
+        
+        for (trait_name, type_name), impl in self.trait_impls.items():
+            if type_name == receiver_type:
+                # Check if method is in this impl
+                for method in impl.methods:
+                    if method.name == expr.method_name:
+                        # Found it!
+                        target_func_name = f"{type_name}_{trait_name}_{method.name}"
+                        break
+            if target_func_name:
+                break
+                
+        if not target_func_name:
+             raise Exception(f"Codegen error: Method '{expr.method_name}' not found for type '{receiver_type}'")
+             
+        # 4. Look up function
+        if target_func_name not in self.module.globals:
+             raise Exception(f"Codegen error: Missing function '{target_func_name}'")
+             
+        func = self.module.globals[target_func_name]
+        
+        # 5. Generate arguments (prepend receiver)
+        args = [receiver_val] + [self._gen_expr(arg) for arg in expr.arguments]
+        
+        # 6. Call
+        return self.builder.call(func, args)
 
     def _gen_match(self, expr: MatchExpr) -> ir.Value:
         # 1. Generate scrutinee
@@ -403,6 +520,10 @@ class IRGenerator:
         # Check if it's a type parameter that should be substituted
         if type_ref.name in type_subst:
             return type_subst[type_ref.name]
+            
+        # Check for Self type
+        if type_ref.name == "Self" and self.current_self_type:
+            return self.current_self_type
         
         # Primitive types
         if type_ref.name == "int":
