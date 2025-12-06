@@ -1,12 +1,13 @@
 from typing import List, Optional
-from forgec.lexer import Token, TokenType
+from forgec.lexer import Lexer, Token, TokenType
 from forgec.diagnostics import DiagnosticEngine, Span
 from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt, 
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
     EnumDef, EnumVariant, EnumInstantiationExpr,
-    Pattern, EnumPattern, MatchArm, MatchExpr
+    Pattern, EnumPattern, MatchArm, MatchExpr,
+    TypeParameter, TypeRef
 )
 
 class Parser:
@@ -47,31 +48,38 @@ class Parser:
         start_token = self._consume(TokenType.FN, "Expected 'fn'")
         name = self._consume(TokenType.IDENTIFIER, "Expected function name").lexeme
         
+        # Parse type parameters: fn name<T, U>(...)
+        type_params = self._parse_type_params()
+        
         self._consume(TokenType.LPAREN, "Expected '(' after function name")
         params = []
         if not self._check(TokenType.RPAREN):
             while True:
                 param_name = self._consume(TokenType.IDENTIFIER, "Expected parameter name").lexeme
                 self._consume(TokenType.COLON, "Expected ':' after parameter name")
-                param_type = self._consume(TokenType.IDENTIFIER, "Expected parameter type").lexeme
+                param_type = self._parse_type_ref()  # Use TypeRef instead of string
                 params.append((param_name, param_type))
                 if not self._match(TokenType.COMMA):
                     break
         self._consume(TokenType.RPAREN, "Expected ')' after parameters")
 
-        return_type = "void"
+        # Parse return type
+        return_type_ref = TypeRef(start_token.span, "void", [])  # Default void
         if self._match(TokenType.ARROW):
-            return_type = self._consume(TokenType.IDENTIFIER, "Expected return type").lexeme
+            return_type_ref = self._parse_type_ref()
 
         self._consume(TokenType.LBRACE, "Expected '{' before function body")
         body = self._block()
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return FunctionDef(span, name, params, return_type, body)
+        return FunctionDef(span, name, type_params, params, return_type_ref, body)
 
     def _struct_def(self) -> StructDef:
         start_token = self._consume(TokenType.STRUCT, "Expected 'struct'")
         name = self._consume(TokenType.IDENTIFIER, "Expected struct name").lexeme
+        
+        # Parse type parameters: struct Name<T, U> { ... }
+        type_params = self._parse_type_params()
         
         self._consume(TokenType.LBRACE, "Expected '{' after struct name")
         fields = []
@@ -79,7 +87,7 @@ class Parser:
         while not self._check(TokenType.RBRACE) and not self._is_at_end():
             field_name = self._consume(TokenType.IDENTIFIER, "Expected field name").lexeme
             self._consume(TokenType.COLON, "Expected ':' after field name")
-            field_type = self._consume(TokenType.IDENTIFIER, "Expected field type").lexeme
+            field_type = self._parse_type_ref()  # Use TypeRef instead of string
             fields.append((field_name, field_type))
             
             if not self._check(TokenType.RBRACE):
@@ -88,25 +96,30 @@ class Parser:
         self._consume(TokenType.RBRACE, "Expected '}' after struct fields")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return StructDef(span, name, fields)
+        return StructDef(span, name, type_params, fields)
 
     def _enum_def(self) -> EnumDef:
         start_token = self._consume(TokenType.ENUM, "Expected 'enum'")
         name = self._consume(TokenType.IDENTIFIER, "Expected enum name").lexeme
         
+        # Parse type parameters: enum Name<T> { ... }
+        type_params = self._parse_type_params()
+        
         self._consume(TokenType.LBRACE, "Expected '{' after enum name")
         variants = []
         
         while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            variant_start = self.tokens[self.current].span
             variant_name = self._consume(TokenType.IDENTIFIER, "Expected variant name").lexeme
-            payload_type = None
+            payload_type_ref = None
             
             # Check for payload
             if self._match(TokenType.LPAREN):
-                payload_type = self._consume(TokenType.IDENTIFIER, "Expected payload type").lexeme
+                payload_type_ref = self._parse_type_ref()  # Use TypeRef instead of string
                 self._consume(TokenType.RPAREN, "Expected ')' after payload type")
             
-            variants.append(EnumVariant(variant_name, payload_type))
+            variant_span = Span(variant_start.start, self.tokens[self.current-1].span.end, variant_start.line, 0)
+            variants.append(EnumVariant(variant_span, variant_name, payload_type_ref))
             
             if not self._check(TokenType.RBRACE):
                 self._consume(TokenType.COMMA, "Expected ',' between variants")
@@ -114,7 +127,7 @@ class Parser:
         self._consume(TokenType.RBRACE, "Expected '}' after enum variants")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return EnumDef(span, name, variants)
+        return EnumDef(span, name, type_params, variants)
 
 
     def _block(self) -> List[Stmt]:
@@ -286,9 +299,12 @@ class Parser:
         return IfExpr(span, condition, then_branch, else_branch)
 
     def _struct_instantiation(self, struct_name_token: Token) -> StructInstantiationExpr:
-        # Point { x: 10, y: 20 }
+        # Box<int> { value: 42 } or Point { x: 10, y: 20 }
         start_span = struct_name_token.span
         struct_name = struct_name_token.lexeme
+        
+        # Parse type arguments if present: Box<int>
+        type_args = self._parse_type_args()
         
         self._consume(TokenType.LBRACE, "Expected '{' for struct instantiation")
         field_values = []
@@ -305,12 +321,15 @@ class Parser:
         self._consume(TokenType.RBRACE, "Expected '}' after struct fields")
         
         span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
-        return StructInstantiationExpr(span, struct_name, field_values)
+        return StructInstantiationExpr(span, struct_name, type_args, field_values)
 
     def _enum_instantiation(self, enum_name_token: Token) -> EnumInstantiationExpr:
-        # Option::Some(42) or Option::None
+        # Option<int>::Some(42) or Option::None
         start_span = enum_name_token.span
         enum_name = enum_name_token.lexeme
+        
+        # Parse type arguments if present: Option<int>
+        type_args = self._parse_type_args()
         
         self._consume(TokenType.COLONCOLON, "Expected '::' for enum variant")
         variant_name = self._consume(TokenType.IDENTIFIER, "Expected variant name").lexeme
@@ -322,7 +341,7 @@ class Parser:
             self._consume(TokenType.RPAREN, "Expected ')' after payload")
         
         span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
-        return EnumInstantiationExpr(span, enum_name, variant_name, payload)
+        return EnumInstantiationExpr(span, enum_name, type_args, variant_name, payload)
 
     def _match_expression(self) -> MatchExpr:
         # match value { Option::Some(x) => { ... }, Option::None => { ... } }
@@ -417,6 +436,73 @@ class Parser:
                 return
             
             self._advance()
+    
+    # --- Generic Type System Parsing ---
+    
+    def _parse_type_params(self) -> List[TypeParameter]:
+        """Parse type parameters: <T, U, V>. Returns empty list if no type parameters."""
+        if not self._match(TokenType.LT):
+            return []
+        
+        params = []
+        while True:
+            param_token = self._consume(TokenType.IDENTIFIER, "Expected type parameter name")
+            params.append(TypeParameter(param_token.span, param_token.lexeme))
+            
+            if not self._match(TokenType.COMMA):
+                break
+        
+        self._consume(TokenType.GT, "Expected '>' after type parameters")
+        return params
+    
+    def _parse_type_ref(self) -> TypeRef:
+        """Parse type reference: int, Box<int>, Option<Box<bool>>. Handles nested generics."""
+        start_token = self._consume(TokenType.IDENTIFIER, "Expected type name")
+        name = start_token.lexeme
+        
+        type_args = []
+        # Check if generic type (use lookahead to avoid confusion with < operator)
+        if self._check(TokenType.LT) and self._is_type_argument_context():
+            self._advance()  # Consume <
+            
+            while True:
+                type_args.append(self._parse_type_ref())  # Recursive for nested generics
+                
+                if not self._match(TokenType.COMMA):
+                    break
+            
+            self._consume(TokenType.GT, "Expected '>' after type arguments")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return TypeRef(span, name, type_args)
+    
+    def _is_type_argument_context(self) -> bool:
+        """Disambiguate < as generic vs comparison.  Returns True for type argument context."""
+        if not self._check(TokenType.LT):
+            return False
+        
+        # Lookahead: IDENTIFIER < IDENTIFIER -> likely generic
+        next_idx = self.current + 1
+        if next_idx < len(self.tokens):
+            next_token = self.tokens[next_idx]
+            if next_token.type == TokenType.IDENTIFIER:
+                return True
+        
+        return False
+    
+    def _parse_type_args(self) -> List[TypeRef]:
+        """Parse type arguments for instantiation: <int, bool>"""
+        if not self._match(TokenType.LT):
+            return []
+        
+        args = []
+        while True:
+            args.append(self._parse_type_ref())
+            if not self._match(TokenType.COMMA):
+                break
+        
+        self._consume(TokenType.GT, "Expected '>' after type arguments")
+        return args
 
 class ParseError(Exception):
     pass

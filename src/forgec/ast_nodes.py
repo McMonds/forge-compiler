@@ -6,6 +6,26 @@ from forgec.diagnostics import Span
 class ASTNode:
     span: Span
 
+# --- Type System ---
+
+@dataclass
+class TypeParameter(ASTNode):
+    """Generic type parameter like 'T' in Box<T>"""
+    name: str
+    # Future: bounds like T: Display
+
+@dataclass  
+class TypeRef(ASTNode):
+    """Reference to a type (possibly generic)"""
+    name: str                           # e.g., "Box", "int", "T"
+    type_args: List['TypeRef']          # e.g., [TypeRef("int")] for Box<int>
+    
+    def __str__(self) -> str:
+        if not self.type_args:
+            return self.name
+        args_str = ", ".join(str(arg) for arg in self.type_args)
+        return f"{self.name}<{args_str}>"
+
 # Expressions
 @dataclass
 class Expr(ASTNode):
@@ -55,20 +75,24 @@ class ExprStmt(Stmt):
 @dataclass
 class FunctionDef(Stmt):
     name: str
-    params: List[tuple[str, str]] # (name, type)
-    return_type: str
+    type_params: List[TypeParameter]       # NEW: Generic parameters like <T>
+    params: List[tuple[str, TypeRef]]       # Changed from str to TypeRef
+    return_type: TypeRef                   # Changed from str to TypeRef
     body: List[Stmt]
+    is_public: bool = False                # For module system
 
 # Struct-related nodes
 @dataclass
 class StructDef(Stmt):
     name: str
-    fields: List[tuple[str, str]]  # [(field_name, type_name), ...]
+    type_params: List[TypeParameter]      # NEW: Generic parameters like <T, U>
+    fields: List[tuple[str, TypeRef]]      # Changed from str to TypeRef
 
 @dataclass
 class StructInstantiationExpr(Expr):
     struct_name: str
-    field_values: List[tuple[str, Expr]]  # [(field_name, value_expr), ...]
+    type_args: List[TypeRef]               # NEW: Type arguments like Box<int>
+    field_values: List[tuple[str, Expr]]   # (field_name, value)
 
 @dataclass
 class FieldAccessExpr(Expr):
@@ -77,18 +101,20 @@ class FieldAccessExpr(Expr):
 
 # Enum-related nodes
 @dataclass
-class EnumVariant:
+class EnumVariant(ASTNode):
     name: str
-    payload_type: Optional[str]  # None for unit variants (e.g., None in Option)
+    payload_type: Optional[TypeRef]        # Changed from str to TypeRef
 
 @dataclass
 class EnumDef(Stmt):
     name: str
+    type_params: List[TypeParameter]       # NEW: Generic parameters
     variants: List[EnumVariant]
 
 @dataclass
 class EnumInstantiationExpr(Expr):
     enum_name: str
+    type_args: List[TypeRef]               # NEW: Type arguments
     variant_name: str
     payload: Optional[Expr]  # None for unit variants
 
