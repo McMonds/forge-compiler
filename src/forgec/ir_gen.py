@@ -53,22 +53,18 @@ class IRGenerator:
         return str(self.module)
 
     def _register_struct_type(self, struct: StructDef):
-        # Store schema for later use
-        self.struct_schemas[struct.name] = struct.fields
+        # Skip generic structs - they'll be monomorphized on demand
+        if struct.type_params:
+            return
         
-        # Map field types to LLVM types
+        # Non-generic struct: create LLVM type
         field_types = []
-        for _, type_name in struct.fields:
-            if type_name == "int":
-                field_types.append(self.int_type)
-            elif type_name == "bool":
-                field_types.append(self.bool_type)
-            else:
-                # Could be another struct
-                if type_name in self.struct_types:
-                    field_types.append(self.struct_types[type_name])
-                else:
-                    raise Exception(f"Unknown type: {type_name}")
+        field_schema = []
+        for field_name, field_type_ref in struct.fields:
+            # Convert TypeRef to LLVM type
+            field_type_ir = self._typeref_to_ir_type(field_type_ref)
+            field_types.append(field_type_ir)
+            field_schema.append((field_name, field_type_ref))  # Store for later
         
         # Create LLVM struct type
         struct_type = ir.LiteralStructType(field_types)
