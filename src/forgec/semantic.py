@@ -81,12 +81,19 @@ class TypeChecker:
             self._check_function(func)
 
     def _check_function(self, func: FunctionDef):
-        self.current_function_return_type = func.return_type
+        # Enter type parameter scope if generic function
+        old_type_params = self._enter_type_param_scope(func.type_params)
+        
+        # Validate return type
+        return_type_str = self._check_type_ref(func.return_type)
+        self.current_function_return_type = return_type_str
+        
         self._enter_scope()
         
-        # Define parameters in scope
-        for param_name, param_type in func.params:
-            if not self.current_scope.define(param_name, param_type, func.span): # Span is approx
+        # Define parameters in scope with TypeRef validation
+        for param_name, param_type_ref in func.params:
+            param_type_str = self._check_type_ref(param_type_ref)
+            if not self.current_scope.define(param_name, param_type_str, func.span):
                 self.diagnostics.error(f"Parameter '{param_name}' is already defined", func.span)
 
         for stmt in func.body:
@@ -94,6 +101,9 @@ class TypeChecker:
         
         self._exit_scope()
         self.current_function_return_type = None
+        
+        # Exit type parameter scope
+        self._exit_type_param_scope(old_type_params)
 
     def _check_stmt(self, stmt: Stmt):
         if isinstance(stmt, LetStmt):
@@ -268,27 +278,61 @@ class TypeChecker:
             self.diagnostics.error(f"Undefined enum '{expr.enum_name}'", expr.span)
             return "error"
         
+        enum_def = self.enum_schemas[expr.enum_name]
+        
+        # Validate type arguments (arity check)
+        expected_params = len(enum_def.type_params)
+        provided_args = len(expr.type_args)
+        
+        if expected_params != provided_args:
+            self.diagnostics.error(
+                f"Enum '{expr.enum_name}' expects {expected_params} type arguments, got {provided_args}",
+                expr.span
+            )
+        
+        # Create type substitution map
+        type_subst = {}
+        if enum_def.type_params and expr.type_args:
+            for type_param, type_arg in zip(enum_def.type_params, expr.type_args):
+                arg_type_str = self._check_type_ref(type_arg)
+                type_subst[type_param.name] = arg_type_str
+        
+        # Track instantiation
+        if expr.type_args:
+            inst_key = tuple(self._typeref_to_string(arg) for arg in expr.type_args)
+            if expr.enum_name not in self.generic_instances:
+                self.generic_instances[expr.enum_name] = set()
+            self.generic_instances[expr.enum_name].add(inst_key)
+        
         # Verify variant exists
-        variants = self.enum_schemas[expr.enum_name]
-        variant = next((v for v in variants if v.name == expr.variant_name), None)
+        variant = next((v for v in enum_def.variants if v.name == expr.variant_name), None)
         if not variant:
             self.diagnostics.error(f"Enum '{expr.enum_name}' has no variant '{expr.variant_name}'", expr.span)
             return "error"
         
         # Check payload
         if variant.payload_type and not expr.payload:
-            self.diagnostics.error(f"Variant '{expr.variant_name}' requires a payload of type '{variant.payload_type}'", expr.span)
+            expected_payload_type = self._substitute_type_in_ref(variant.payload_type, type_subst)
+            self.diagnostics.error(
+                f"Variant '{expr.variant_name}' requires a payload of type '{expected_payload_type}'",
+                expr.span
+            )
         elif not variant.payload_type and expr.payload:
             self.diagnostics.error(f"Variant '{expr.variant_name}' does not take a payload", expr.span)
         elif variant.payload_type and expr.payload:
+            expected_payload_type = self._substitute_type_in_ref(variant.payload_type, type_subst)
             payload_type = self._check_expr(expr.payload)
-            if payload_type != variant.payload_type:
+            if payload_type != expected_payload_type:
                 self.diagnostics.error(
-                    f"Variant '{expr.variant_name}' expects payload type '{variant.payload_type}', got '{payload_type}'",
+                    f"Variant '{expr.variant_name}' expects payload type '{expected_payload_type}', got '{payload_type}'",
                     expr.payload.span
                 )
         
-        return expr.enum_name  # Return the enum type name
+        # Return monomorphized type name
+        if expr.type_args:
+            args_str = ', '.join(self._typeref_to_string(arg) for arg in expr.type_args)
+            return f"{expr.enum_name}<{args_str}>"
+        return expr.enum_name
 
 
     def _check_struct_instantiation(self, expr: StructInstantiationExpr) -> str:
@@ -297,31 +341,65 @@ class TypeChecker:
             self.diagnostics.error(f"Undefined struct '{expr.struct_name}'", expr.span)
             return "error"
         
-        schema = self.struct_schemas[expr.struct_name]
+        struct_def = self.struct_schemas[expr.struct_name]
+        
+        # Validate type arguments (arity check)
+        expected_params = len(struct_def.type_params)
+        provided_args = len(expr.type_args)
+        
+        if expected_params != provided_args:
+            self.diagnostics.error(
+                f"Struct '{expr.struct_name}' expects {expected_params} type arguments, got {provided_args}",
+                expr.span
+            )
+            # Continue checking even with wrong arity
+        
+        # Create type substitution map for checking fields
+        type_subst = {}
+        if struct_def.type_params and expr.type_args:
+            for type_param, type_arg in zip(struct_def.type_params, expr.type_args):
+                # Validate type argument
+                arg_type_str = self._check_type_ref(type_arg)
+                type_subst[type_param.name] = arg_type_str
+        
+        # Track instantiation
+        if expr.type_args:
+            inst_key = tuple(self._typeref_to_string(arg) for arg in expr.type_args)
+            if expr.struct_name not in self.generic_instances:
+                self.generic_instances[expr.struct_name] = set()
+            self.generic_instances[expr.struct_name].add(inst_key)
+        
         provided_fields = {name: value for name, value in expr.field_values}
         
         # Check all required fields are provided
-        for field_name, field_type in schema:
+        for field_name, field_type_ref in struct_def.fields:
             if field_name not in provided_fields:
                 self.diagnostics.error(f"Missing field '{field_name}' in struct instantiation", expr.span)
                 continue
+            
+            # Get expected field type (with substitution if generic)
+            expected_type = self._substitute_type_in_ref(field_type_ref, type_subst)
             
             # Type check the field value
             value_expr = provided_fields[field_name]
             value_type = self._check_expr(value_expr)
             
-            if value_type != field_type:
+            if value_type != expected_type:
                 self.diagnostics.error(
-                    f"Field '{field_name}' expects type '{field_type}', got '{value_type}'",
+                    f"Field '{field_name}' expects type '{expected_type}', got '{value_type}'",
                     value_expr.span
                 )
         
         # Check for extra fields
         for field_name, _ in expr.field_values:
-            if not any(name == field_name for name, _ in schema):
+            if not any(name == field_name for name, _ in struct_def.fields):
                 self.diagnostics.error(f"Struct '{expr.struct_name}' has no field '{field_name}'", expr.span)
         
-        return expr.struct_name  # Return the struct type name
+        # Return monomorphized type name
+        if expr.type_args:
+            args_str = ', '.join(self._typeref_to_string(arg) for arg in expr.type_args)
+            return f"{expr.struct_name}<{args_str}>"
+        return expr.struct_name
 
     def _check_field_access(self, expr: FieldAccessExpr) -> str:
         obj_type = self._check_expr(expr.object)
@@ -464,6 +542,15 @@ class TypeChecker:
                 )
             self.type_params[tp.name] = tp
         return old_params
+    
+    def _substitute_type_in_ref(self, type_ref: TypeRef, type_subst: Dict[str, str]) -> str:
+        """Substitute type parameters in a TypeRef. Returns string type name."""
+        # If this is a type parameter, substitute it
+        if type_ref.name in type_subst:
+            return type_subst[type_ref.name]
+        
+        # Otherwise just convert to string (handles concrete types)
+        return self._typeref_to_string(type_ref)
     
     def _exit_type_param_scope(self, old_params: Dict[str, TypeParameter]):
         """Restore previous type parameter scope"""
