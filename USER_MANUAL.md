@@ -20,6 +20,7 @@ Welcome to **Forge**, a modern statically-typed compiled programming language de
 10. [Examples](#10-examples)
 11. [Troubleshooting](#11-troubleshooting)
 12. [Best Practices](#12-best-practices)
+13. [Advanced Features](#13-advanced-features)
 
 ---
 
@@ -944,13 +945,79 @@ fn calculate_distance(x: int, y: int) -> int { }
 
 ---
 
+## 13. Advanced Features
+
+### 13.1 Generics
+
+Generics allow you to write flexible, reusable code that works with multiple types.
+
+**Generic Structs:**
+```rust
+struct Box<T> {
+    value: T
+}
+
+let int_box = Box<int> { value: 42 };
+let bool_box = Box<bool> { value: true };
+```
+
+**Generic Functions:**
+```rust
+fn identity<T>(x: T) -> T {
+    x
+}
+
+let n = identity<int>(10);
+```
+
+**Generic Enums:**
+```rust
+enum Option<T> {
+    Some(T),
+    None
+}
+
+let opt = Option<int>::Some(100);
+```
+
+### 13.2 Traits
+
+Traits define shared behavior that types can implement.
+
+**Defining a Trait:**
+```rust
+trait Display {
+    fn show(self) -> int;
+}
+```
+
+**Implementing a Trait:**
+```rust
+struct Point { x: int, y: int }
+
+impl Display for Point {
+    fn show(self) -> int {
+        self.x + self.y
+    }
+}
+```
+
+**Using Traits:**
+```rust
+let p = Point { x: 10, y: 20 };
+let val = p.show();  // Static dispatch
+```
+
+---
+
 ## Appendix A: Language Grammar
 
 ### A.1 Keywords
 
 ```
 fn      let     if      else    match   struct  enum
-int     bool    true    false   void
+int     bool    true    false   void    trait   impl
+for     self    return
 ```
 
 ### A.2 Operators
@@ -976,12 +1043,9 @@ int     bool    true    false   void
 
 These features are planned but not yet implemented:
 
-- **Generics:** `struct Box<T> { value: T }`
-- **Traits:** `trait Display { fn to_string() }`
 - **Modules:** `mod utils; use utils::helper;`
 - **Strings:** Native string type
 - **Arrays:** `[int; 10]`
-- **Return Keyword:** Early returns
 - **Loops:** `for`, `while`
 - **Mutable Variables:** `mut` keyword
 - **Floating Point:** `f32`, `f64`
