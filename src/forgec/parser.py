@@ -248,11 +248,15 @@ class Parser:
         if self._match(TokenType.IDENTIFIER):
             identifier_token = self.tokens[self.current-1]
             
-            # Check for enum instantiation (e.g., Option::Some(42))
-            if self._check(TokenType.COLONCOLON):
-                return self._enum_instantiation(identifier_token)
+            # Check for type arguments first: Box<int>
+            type_args = self._parse_type_args()
             
-            # Check if this is a struct instantiation (e.g., Point { x: 10, y: 20 })
+           # Check for enum instantiation (e.g., Option<int>::Some(42))
+            if self._check(TokenType.COLONCOLON):
+                # Create a temporary token with type args for _enum_instantiation
+                return self._enum_instantiation(identifier_token, type_args)
+            
+            # Check if this is a struct instantiation (e.g., Box<int> { value: 10 })
             # We need to be careful not to confuse this with a match expression scrutinee followed by {
             # e.g. match x { ... } -> x { ... } looks like struct instantiation
             # We look ahead to see if it looks like { field: ... } or {}
@@ -260,14 +264,18 @@ class Parser:
                 is_struct = False
                 # Look ahead
                 if self.tokens[self.current + 1].type == TokenType.RBRACE:
-                    is_struct = True # Empty struct Point {}
+                    is_struct = True # Empty struct Box<int> {}
                 elif (self.tokens[self.current + 1].type == TokenType.IDENTIFIER and 
                       self.tokens[self.current + 2].type == TokenType.COLON):
-                    is_struct = True # Point { x: ... }
+                    is_struct = True # Box<int> { x: ... }
                 
                 if is_struct:
-                    return self._struct_instantiation(identifier_token)
+                    return self._struct_instantiation(identifier_token, type_args)
             
+            # If type_args were parsed but not used for instantiation, it's an error or a variable with type args (which is not allowed here)
+            if type_args:
+                raise self._error("Type arguments are only allowed for struct or enum instantiations here.")
+
             return VariableExpr(identifier_token.span, identifier_token.lexeme)
         
         if self._match(TokenType.IF):
@@ -298,13 +306,14 @@ class Parser:
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
         return IfExpr(span, condition, then_branch, else_branch)
 
-    def _struct_instantiation(self, struct_name_token: Token) -> StructInstantiationExpr:
+    def _struct_instantiation(self, struct_name_token: Token, type_args: List[TypeRef] = None) -> StructInstantiationExpr:
         # Box<int> { value: 42 } or Point { x: 10, y: 20 }
         start_span = struct_name_token.span
         struct_name = struct_name_token.lexeme
         
-        # Parse type arguments if present: Box<int>
-        type_args = self._parse_type_args()
+        # Parse type arguments if not already provided
+        if type_args is None:
+            type_args = self._parse_type_args()
         
         self._consume(TokenType.LBRACE, "Expected '{' for struct instantiation")
         field_values = []
@@ -323,13 +332,14 @@ class Parser:
         span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
         return StructInstantiationExpr(span, struct_name, type_args, field_values)
 
-    def _enum_instantiation(self, enum_name_token: Token) -> EnumInstantiationExpr:
+    def _enum_instantiation(self, enum_name_token: Token, type_args: List[TypeRef] = None) -> EnumInstantiationExpr:
         # Option<int>::Some(42) or Option::None
         start_span = enum_name_token.span
         enum_name = enum_name_token.lexeme
         
-        # Parse type arguments if present: Option<int>
-        type_args = self._parse_type_args()
+        # Parse type arguments if not already provided
+        if type_args is None:
+            type_args = self._parse_type_args()
         
         self._consume(TokenType.COLONCOLON, "Expected '::' for enum variant")
         variant_name = self._consume(TokenType.IDENTIFIER, "Expected variant name").lexeme
