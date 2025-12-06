@@ -42,7 +42,7 @@ def test_semantic_undefined_variable():
     assert "Undefined variable" in diag.diagnostics[0].message
 
 def test_semantic_scope_shadowing():
-    # Aether allows shadowing? Let's say yes for now, or at least separate scopes.
+    # Forge allows shadowing in separate scopes
     source = "fn main() { let x = 10; { let x = 20; } }"
     # Note: My parser doesn't support blocks as statements yet, only function bodies.
     # Let's test variable redefinition in same scope

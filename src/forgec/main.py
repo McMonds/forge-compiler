@@ -4,7 +4,7 @@ from forgec.pipeline import CompilerPipeline
 
 app = typer.Typer(
     name="forgec",
-    help="The Aether Programming Language Compiler",
+    help="The Forge Programming Language Compiler",
     add_completion=False,
 )
 console = Console()
@@ -15,7 +15,7 @@ def compile(
     visualize: bool = typer.Option(False, "--visualize", "-v", help="Generate visualization data"),
 ):
     """
-    Compile an Aether source file.
+    Compile a Forge source file.
     """
     pipeline = CompilerPipeline(source_file, visualize=visualize)
     try:
