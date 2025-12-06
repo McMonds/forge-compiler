@@ -1,11 +1,12 @@
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Set
 from dataclasses import dataclass
 from forgec.ast_nodes import (
     Program, FunctionDef, Stmt, LetStmt, ExprStmt,
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
-    EnumDef, EnumInstantiationExpr,
-    MatchExpr, EnumPattern
+    EnumDef, EnumVariant, EnumInstantiationExpr,
+    MatchExpr, EnumPattern,
+    TypeParameter, TypeRef
 )
 from forgec.diagnostics import DiagnosticEngine, Span
 
@@ -40,29 +41,38 @@ class TypeChecker:
         self.global_scope = SymbolTable()
         self.current_scope = self.global_scope
         self.current_function_return_type: Optional[str] = None
-        self.struct_schemas: Dict[str, List[tuple[str, str]]] = {}  # struct_name -> [(field_name, field_type), ...]
-        self.enum_schemas: Dict[str, List] = {}  # enum_name -> [EnumVariant, ...]
+        
+        # Store full definitions instead of just fields
+        self.struct_schemas: Dict[str, StructDef] = {}  # name -> StructDef
+        self.enum_schemas: Dict[str, EnumDef] = {}      # name -> EnumDef
+        
+        # NEW: Generic type system  
+        self.type_params: Dict[str, TypeParameter] = {}  # Currently in-scope type parameters
+        self.generic_instances: Dict[str, Set[tuple]] = {}  # Track instantiations for monomorphization
 
 
     def check(self, program: Program):
-        # First pass: Register all struct types
+        # First pass: Register all struct/enum types (store full definitions)
         for struct in program.structs:
             if struct.name in self.struct_schemas:
                 self.diagnostics.error(f"Struct '{struct.name}' is already defined", struct.span)
             else:
-                self.struct_schemas[struct.name] = struct.fields
+                self.struct_schemas[struct.name] = struct  # Store full StructDef
         
-        # Register all enum types
+        # Register all enum types  
         for enum in program.enums:
             if enum.name in self.enum_schemas:
                 self.diagnostics.error(f"Enum '{enum.name}' is already defined", enum.span)
             else:
-                self.enum_schemas[enum.name] = enum.variants
+                self.enum_schemas[enum.name] = enum  # Store full EnumDef
         
         # Second pass: Define all functions in global scope
         for func in program.functions:
-            # For now, function types are simplified
-            func_type = f"fn({', '.join(t for _, t in func.params)}) -> {func.return_type}"
+            # Build function type string with TypeRef support
+            param_types = ', '.join(self._typeref_to_string(t) for _, t in func.params)
+            return_type = self._typeref_to_string(func.return_type)
+            func_type = f"fn({param_types}) -> {return_type}"
+            
             if not self.global_scope.define(func.name, func_type, func.span):
                 self.diagnostics.error(f"Function '{func.name}' is already defined", func.span)
 
@@ -354,3 +364,107 @@ class TypeChecker:
 
     def _exit_scope(self):
         self.current_scope = self.current_scope.parent
+    
+    # --- Generic Type System Helpers ---
+    
+    def _typeref_to_string(self, type_ref: TypeRef) -> str:
+        """Convert TypeRef to string representation like 'Box<int>' or 'Option<T>'"""
+        if not type_ref.type_args:
+            return type_ref.name
+        
+        args_str = ', '.join(self._typeref_to_string(arg) for arg in type_ref.type_args)
+        return f"{type_ref.name}<{args_str}>"
+    
+    def _check_type_ref(self, type_ref: TypeRef) -> str:
+        """
+        Validate a TypeRef and return its string representation.
+        Checks that types exist and type arguments have correct arity.
+        """
+        # Is it a type parameter?
+        if type_ref.name in self.type_params:
+            if type_ref.type_args:
+                self.diagnostics.error(
+                    f"Type parameter '{type_ref.name}' cannot have type arguments",
+                    type_ref.span
+                )
+            return type_ref.name
+        
+        # Is it a primitive type?
+        if type_ref.name in {"int", "bool", "void"}:
+            if type_ref.type_args:
+                self.diagnostics.error(
+                    f"Primitive type '{type_ref.name}' cannot have type arguments",
+                    type_ref.span
+                )
+            return type_ref.name
+        
+        # Is it a struct?
+        if type_ref.name in self.struct_schemas:
+            struct_def = self.struct_schemas[type_ref.name]
+            expected_params = len(struct_def.type_params)
+            provided_args = len(type_ref.type_args)
+            
+            if expected_params != provided_args:
+                self.diagnostics.error(
+                    f"Struct '{type_ref.name}' expects {expected_params} type arguments, got {provided_args}",
+                    type_ref.span
+                )
+                # Continue checking args anyway
+            
+            # Recursively check type arguments
+            for arg in type_ref.type_args:
+                self._check_type_ref(arg)
+            
+            # Track instantiation for monomorphization
+            if type_ref.type_args:
+                inst_key = tuple(self._typeref_to_string(arg) for arg in type_ref.type_args)
+                if type_ref.name not in self.generic_instances:
+                    self.generic_instances[type_ref.name] = set()
+                self.generic_instances[type_ref.name].add(inst_key)
+            
+            return self._typeref_to_string(type_ref)
+        
+        # Is it an enum?
+        if type_ref.name in self.enum_schemas:
+            enum_def = self.enum_schemas[type_ref.name]
+            expected_params = len(enum_def.type_params)
+            provided_args = len(type_ref.type_args)
+            
+            if expected_params != provided_args:
+                self.diagnostics.error(
+                    f"Enum '{type_ref.name}' expects {expected_params} type arguments, got {provided_args}",
+                    type_ref.span
+                )
+            
+            # Recursively check type arguments
+            for arg in type_ref.type_args:
+                self._check_type_ref(arg)
+            
+            # Track instantiation
+            if type_ref.type_args:
+                inst_key = tuple(self._typeref_to_string(arg) for arg in type_ref.type_args)
+                if type_ref.name not in self.generic_instances:
+                    self.generic_instances[type_ref.name] = set()
+                self.generic_instances[type_ref.name].add(inst_key)
+            
+            return self._typeref_to_string(type_ref)
+        
+        # Unknown type
+        self.diagnostics.error(f"Undefined type '{type_ref.name}'", type_ref.span)
+        return "error"
+    
+    def _enter_type_param_scope(self, type_params: List[TypeParameter]):
+        """Enter scope with given type parameters"""
+        old_params = self.type_params.copy()
+        for tp in type_params:
+            if tp.name in self.type_params:
+                self.diagnostics.error(
+                    f"Type parameter '{tp.name}' is already defined",
+                    tp.span
+                )
+            self.type_params[tp.name] = tp
+        return old_params
+    
+    def _exit_type_param_scope(self, old_params: Dict[str, TypeParameter]):
+        """Restore previous type parameter scope"""
+        self.type_params = old_params
