@@ -5,18 +5,19 @@ from forgec.ast_nodes import (
     Expr, BinaryExpr, LiteralExpr, VariableExpr, IfExpr, CallExpr,
     StructDef, StructInstantiationExpr, FieldAccessExpr,
     EnumDef, EnumInstantiationExpr,
-    MatchExpr, EnumPattern
+    MatchExpr, EnumPattern,
+    TypeParameter, TypeRef  # NEW: For generics
 )
 from forgec.diagnostics import DiagnosticEngine
 
 class IRGenerator:
-    def __init__(self, diagnostics: DiagnosticEngine):
+    def __init__(self, program: Program, diagnostics):
         self.diagnostics = diagnostics
-        self.module = ir.Module(name="forge_module")
+        self.module = ir.Module(name="main")
         self.builder = None
-        self.func_symtab: Dict[str, ir.Value] = {}
         self.current_func = None
-
+        self.named_values = {}  # Variable name -> ir.Value
+        
         # Standard types
         self.int_type = ir.IntType(32)
         self.bool_type = ir.IntType(1)
@@ -29,6 +30,14 @@ class IRGenerator:
         # Enum types (tagged unions)
         self.enum_types: Dict[str, ir.Type] = {}  # enum_name -> LLVM struct type { i8 tag, payload }
         self.enum_schemas: Dict[str, list] = {}  # enum_name -> [EnumVariant, ...]
+        
+        # NEW: Monomorphization infrastructure
+        self.mono_cache: Dict[tuple, ir.Type] = {}  # (type_name, tuple(type_args)) -> ir.Type
+        # Example: ("Box", ("int",)) -> %Box_int = { i32 }
+        
+        # Store original definitions for monomorphization
+        self.struct_defs: Dict[str, StructDef] = {s.name: s for s in program.structs}
+        self.enum_defs: Dict[str, EnumDef] = {e.name: e for e in program.enums}
 
     def generate(self, program: Program) -> str:
         # Register struct types
@@ -189,8 +198,16 @@ class IRGenerator:
         return ir.Constant(self.int_type, 0) # Fallback
 
     def _gen_struct_instantiation(self, expr: StructInstantiationExpr) -> ir.Value:
-        struct_type = self.struct_types[expr.struct_name]
-        schema = self.struct_schemas[expr.struct_name]
+        # Get the appropriate struct type (monomorphized if generic)
+        if expr.type_args:
+            # Generic instantiation: Box<int> { value: 42 }
+            struct_type = self._monomorphize_struct(expr.struct_name, expr.type_args)
+            struct_def = self.struct_defs[expr.struct_name]
+            schema = struct_def.fields  # Use original definition fields
+        else:
+            # Non-generic: Point { x: 10, y: 20 }
+            struct_type = self.struct_types[expr.struct_name]
+            schema = self.struct_schemas[expr.struct_name]
         
         # Create an undefined struct value
         struct_val = ir.Constant(struct_type, ir.Undefined)
@@ -240,30 +257,38 @@ class IRGenerator:
         return self.builder.extract_value(obj, field_idx, name=expr.field_name)
 
     def _gen_enum_instantiation(self, expr: EnumInstantiationExpr) -> ir.Value:
-        enum_type = self.enum_types[expr.enum_name]
-        variants = self.enum_schemas[expr.enum_name]
+        # Get the appropriate enum type (monomorphized if generic)
+        if expr.type_args:
+            # Generic instantiation: Option<int>::Some(42)
+            enum_type = self._monomorphize_enum(expr.enum_name, expr.type_args)
+            enum_def = self.enum_defs[expr.enum_name]
+            variants = enum_def.variants
+        else:
+            # Non-generic enum
+            enum_type = self.enum_types[expr.enum_name]
+            variants = self.enum_schemas[expr.enum_name]
         
         # Find variant index (tag)
         tag = next(i for i, v in enumerate(variants) if v.name == expr.variant_name)
         
-        # Create enum value (tagged union)
-        enum_val = ir.Constant(enum_type, ir.Undefined)
+        # Create tagged union: { i8 tag, payload }
+        tag_constant = ir.Constant(ir.IntType(8), tag)
+        tagged_union = self.builder.insert_value(ir.Constant(enum_type, ir.Undefined), tag_constant, 0)
         
-        # Set tag (first field)
-        enum_val = self.builder.insert_value(enum_val, ir.Constant(ir.IntType(8), tag), 0, name=f"{expr.enum_name}.tag")
-        
-        # Set payload (second field) if exists
-        if expr.payload:
+        # Insert payload if exists
+        variant = next(v for v in variants if v.name == expr.variant_name)
+        if variant.payload_type and expr.payload:
             payload_val = self._gen_expr(expr.payload)
-            enum_val = self.builder.insert_value(enum_val, payload_val, 1, name=f"{expr.enum_name}.{expr.variant_name}")
+            tagged_union = self.builder.insert_value(tagged_union, payload_val, 1)
         else:
-            # For unit variants, set payload to 0 (unused)
-            enum_val = self.builder.insert_value(enum_val, ir.Constant(self.int_type, 0), 1, name=f"{expr.enum_name}.{expr.variant_name}")
+            # Unit variant - insert zero payload
+            # The type of the zero payload must match the second element of the enum_type
+            # which is the largest payload type determined during monomorphization.
+            payload_ir_type = enum_type.elements[1]
+            zero = ir.Constant(payload_ir_type, 0)
+            tagged_union = self.builder.insert_value(tagged_union, zero, 1)
         
-        return enum_val
-
-
-        return enum_val
+        return tagged_union
 
     def _gen_match(self, expr: MatchExpr) -> ir.Value:
         # 1. Generate scrutinee
@@ -371,6 +396,122 @@ class IRGenerator:
             phi.add_incoming(val, block)
             
         return phi
+    
+    # --- Monomorphization Helpers ---
+    
+    def _typeref_to_ir_type(self, type_ref: TypeRef, type_subst: Dict[str, ir.Type] = None) -> ir.Type:
+        """Convert TypeRef to LLVM IR type, handling generics via monomorphization"""
+        if type_subst is None:
+            type_subst = {}
+        
+        # Check if it's a type parameter that should be substituted
+        if type_ref.name in type_subst:
+            return type_subst[type_ref.name]
+        
+        # Primitive types
+        if type_ref.name == "int":
+            return self.int_type
+        elif type_ref.name == "bool":
+            return self.bool_type
+        elif type_ref.name == "void":
+            return self.void_type
+        
+        # Generic struct
+        if type_ref.name in self.struct_defs:
+            if type_ref.type_args:
+                return self._monomorphize_struct(type_ref.name, type_ref.type_args)
+            else:
+                # Non-generic struct (or generic with no args - error, but handled elsewhere)
+                return self.struct_types.get(type_ref.name, self.int_type)
+        
+        # Generic enum
+        if type_ref.name in self.enum_defs:
+            if type_ref.type_args:
+                return self._monomorphize_enum(type_ref.name, type_ref.type_args)
+            else:
+                return self.enum_types.get(type_ref.name, self.int_type)
+        
+        # Fallback
+        return self.int_type
+    
+    def _monomorphize_struct(self, struct_name: str, type_args: list) -> ir.Type:
+        """Generate concrete LLVM struct type for generic instantiation like Box<int>"""
+        # Create cache key
+        type_arg_strs = tuple(self._typeref_to_string(arg) for arg in type_args)
+        cache_key = (struct_name, type_arg_strs)
+        
+        # Check cache
+        if cache_key in self.mono_cache:
+            return self.mono_cache[cache_key]
+        
+        # Get original generic definition
+        struct_def = self.struct_defs[struct_name]
+        
+        # Create type substitution map: T -> int, U -> bool, etc.
+        type_subst = {}
+        for type_param, type_arg in zip(struct_def.type_params, type_args):
+            ir_type = self._typeref_to_ir_type(type_arg)
+            type_subst[type_param.name] = ir_type
+        
+        # Generate field types with substitution
+        field_types = []
+        for field_name, field_type_ref in struct_def.fields:
+            field_ir_type = self._typeref_to_ir_type(field_type_ref, type_subst)
+            field_types.append(field_ir_type)
+        
+        # Create monomorphized LLVM type
+        mono_name = f"{struct_name}_{'_'.join(type_arg_strs)}"
+        mono_type = ir.LiteralStructType(field_types)
+        
+        # Cache it
+        self.mono_cache[cache_key] = mono_type
+        
+        return mono_type
+    
+    def _monomorphize_enum(self, enum_name: str, type_args: list) -> ir.Type:
+        """Generate concrete LLVM enum type (tagged union) for generic instantiation"""
+        # Create cache key
+        type_arg_strs = tuple(self._typeref_to_string(arg) for arg in type_args)
+        cache_key = (enum_name, type_arg_strs)
+        
+        # Check cache
+        if cache_key in self.mono_cache:
+            return self.mono_cache[cache_key]
+        
+        # Get original generic definition
+        enum_def = self.enum_defs[enum_name]
+        
+        # Create type substitution map
+        type_subst = {}
+        for type_param, type_arg in zip(enum_def.type_params, type_args):
+            ir_type = self._typeref_to_ir_type(type_arg)
+            type_subst[type_param.name] = ir_type
+        
+        # For enums, we need to find the largest payload type after substitution
+        # Tagged union: { i8 tag, <largest_payload_type> }
+        tag_type = ir.IntType(8)
+        max_payload_type = self.int_type  # Default
+        
+        for variant in enum_def.variants:
+            if variant.payload_type:
+                payload_ir_type = self._typeref_to_ir_type(variant.payload_type, type_subst)
+                # Simple heuristic: use the "largest" (just pick any for now)
+                max_payload_type = payload_ir_type
+        
+        # Create tagged union
+        mono_type = ir.LiteralStructType([tag_type, max_payload_type])
+        
+        # Cache it
+        self.mono_cache[cache_key] = mono_type
+        
+        return mono_type
+    
+    def _typeref_to_string(self, type_ref: TypeRef) -> str:
+        """Convert TypeRef to string for cache keys"""
+        if not type_ref.type_args:
+            return type_ref.name
+        args_str = '_'.join(self._typeref_to_string(arg) for arg in type_ref.type_args)
+        return f"{type_ref.name}_{args_str}"
 
     def _gen_if(self, expr: IfExpr) -> ir.Value:
         # 1. Generate condition
