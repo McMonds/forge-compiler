@@ -21,6 +21,9 @@ Welcome to **Forge**, a modern statically-typed compiled programming language de
 11. [Troubleshooting](#11-troubleshooting)
 12. [Best Practices](#12-best-practices)
 13. [Advanced Features](#13-advanced-features)
+14. [Generics](#14-generics)
+15. [Traits](#15-traits)
+16. [Module System](#16-module-system)
 
 ---
 
@@ -1060,5 +1063,136 @@ These features are planned but not yet implemented:
 
 ---
 
-**Forge User Manual v0.2.0**  
+## 14. Generics
+
+Generics allow you to write code that is flexible and reusable across different types.
+
+### 14.1 Generic Structs
+
+```rust
+struct Box<T> {
+    value: T
+}
+
+fn main() {
+    let int_box = Box<int> { value: 42 };
+    let bool_box = Box<bool> { value: true };
+}
+```
+
+### 14.2 Generic Enums
+
+```rust
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn main() {
+    let x = Option<int>::Some(10);
+    let y = Option<bool>::None;
+}
+```
+
+### 14.3 Generic Functions
+
+```rust
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn main() {
+    let a = identity<int>(5);
+    let b = identity<bool>(true);
+}
+```
+
+---
+
+## 15. Traits
+
+Traits define shared behavior that types can implement.
+
+### 15.1 Defining a Trait
+
+```rust
+trait Display {
+    fn show(self) -> int;
+}
+```
+
+### 15.2 Implementing a Trait
+
+```rust
+struct Point {
+    x: int,
+    y: int
+}
+
+impl Display for Point {
+    fn show(self) -> int {
+        self.x + self.y
+    }
+}
+```
+
+### 15.3 Method Calls
+
+```rust
+fn main() {
+    let p = Point { x: 10, y: 20 };
+    let s = p.show(); // Returns 30
+}
+```
+
+---
+
+## 16. Module System
+
+The module system helps you organize code into multiple files and control visibility.
+
+### 16.1 Declaring Modules
+
+Use the `mod` keyword to declare a submodule. Forge will look for a file named `name.forge` or `name/mod.forge`.
+
+```rust
+// main.forge
+mod math;
+
+fn main() -> int {
+    math::add(1, 2)
+}
+```
+
+### 16.2 Visibility with `pub`
+
+By default, all items are private to their module. Use `pub` to make them accessible from outside.
+
+```rust
+// math.forge
+pub fn add(a: int, b: int) -> int {
+    a + b
+}
+
+fn secret_helper() {
+    // Private to math module
+}
+```
+
+### 16.3 Importing with `use`
+
+Use the `use` keyword to bring items into the current scope.
+
+```rust
+mod math;
+use math::add;
+
+fn main() -> int {
+    add(10, 20)
+}
+```
+
+---
+
+**Forge User Manual v0.3.0**  
 *Last Updated: December 2024*

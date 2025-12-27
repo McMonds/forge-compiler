@@ -20,6 +20,9 @@ class TokenType(Enum):
     IMPL = auto()
     FOR = auto()
     SELF = auto()
+    MOD = auto()
+    USE = auto()
+    PUB = auto()
 
     # Literals
     INTEGER = auto()
@@ -83,6 +86,9 @@ class Lexer:
             (TokenType.IMPL, r'\bimpl\b'),
             (TokenType.FOR, r'\bfor\b'),
             (TokenType.SELF, r'\bself\b'),
+            (TokenType.MOD, r'\bmod\b'),
+            (TokenType.USE, r'\buse\b'),
+            (TokenType.PUB, r'\bpub\b'),
             
             (TokenType.FATARROW, r'=>'),
             (TokenType.ARROW, r'->'),

@@ -1,0 +1,35 @@
+// examples/phase3_features.forge
+// This example showcases Phase III features: Generics, Traits, and Modules.
+
+mod math;
+use math::add;
+
+// 1. Generics: A generic Box struct
+struct Box<T> {
+    value: T
+}
+
+// 2. Traits: A trait for showing values
+trait Show {
+    fn show(self) -> int;
+}
+
+// 3. Implementations: Implementing Show for Box<int>
+impl Show for Box<int> {
+    fn show(self) -> int {
+        self.value
+    }
+}
+
+fn main() -> int {
+    // Using the imported function from the math module
+    let sum = add(10, 20);
+    
+    // Using a generic struct
+    let my_box = Box<int> { value: sum };
+    
+    // Calling a trait method
+    let result = my_box.show();
+    
+    return result; // Should return 30
+}

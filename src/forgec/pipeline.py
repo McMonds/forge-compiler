@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional, Dict, Any
 import json
+from forgec.ast_nodes import Program, ModDecl # NEW
 
 from forgec.lexer import Lexer
 from forgec.parser import Parser
@@ -39,6 +40,11 @@ class CompilerPipeline:
         if self.diagnostics.has_errors:
             raise Exception("Parsing failed")
 
+        # 2.5 Resolve Modules
+        self._resolve_modules(program, self.source_path.parent)
+        if self.diagnostics.has_errors:
+             raise Exception("Module resolution failed")
+
         # 3. Semantic Analysis
         checker = TypeChecker(self.diagnostics)
         checker.check(program)
@@ -61,7 +67,41 @@ class CompilerPipeline:
         if not self.source_path.exists():
             raise FileNotFoundError(f"Source file not found: {self.source_path}")
         self.source_code = self.source_path.read_text()
+        self.source_code = self.source_path.read_text()
         self.artifacts["source"] = self.source_code
+
+    def _resolve_modules(self, program: Program, base_dir: Path):
+        """
+        Recursively find and parse module files.
+        """
+        for mod in program.modules:
+            # 1. base_dir / name.forge
+            p1 = base_dir / f"{mod.name}.forge"
+            # 2. base_dir / name / mod.forge
+            p2 = base_dir / mod.name / "mod.forge"
+            
+            target_file = None
+            if p1.exists():
+                target_file = p1
+            elif p2.exists():
+                target_file = p2
+            
+            if not target_file:
+                self.diagnostics.error(f"Module file not found for '{mod.name}'", mod.span)
+                continue
+                
+            # Parse module
+            code = target_file.read_text()
+            lexer = Lexer(code, self.diagnostics)
+            tokens = lexer.tokenize()
+            parser = Parser(tokens, self.diagnostics)
+            mod_program = parser.parse()
+            
+            mod.body = mod_program
+            
+            # Recurse: submodules are expected in a directory named after the module
+            new_base = base_dir / mod.name
+            self._resolve_modules(mod_program, new_base)
 
     def _export_visualization_data(self):
         """

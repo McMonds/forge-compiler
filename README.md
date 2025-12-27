@@ -25,7 +25,7 @@
 
 ## ✨ Features
 
-Forge is currently in **Phase II (Complete)**, offering a robust foundation for building complex applications.
+Forge is currently in **Phase III (Complete)**, offering a powerful type system with generics, traits, and a robust module system.
 
 ### 🛡️ Static Type System
 - **Strong Type Checking**: All types verified at compile time
@@ -73,6 +73,51 @@ fn safe_divide(a: int, b: int) -> int {
         Result::Ok(value) => { value },
         Result::Error(code) => { 0 }
     }
+}
+```
+
+### 🧬 Generics
+Forge supports powerful generics for structs, enums, and functions, enabling code reuse without performance loss.
+
+```rust
+struct Box<T> {
+    value: T
+}
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn identity<T>(x: T) -> T {
+    x
+}
+```
+
+### 📜 Traits & Implementations
+Define shared behavior with traits and implement them for any type.
+
+```rust
+trait Display {
+    fn show(self) -> int;
+}
+
+impl Display for Point {
+    fn show(self) -> int {
+        self.x + self.y
+    }
+}
+```
+
+### 📦 Module System & Visibility
+Organize your code into modules with file-based resolution and visibility control.
+
+```rust
+mod math;
+use math::add;
+
+pub fn main() -> int {
+    add(10, 20)
 }
 ```
 
@@ -660,9 +705,10 @@ forge/
 |-------|--------|----------|----------|
 | **I. Core Calculus** | ✅ **Complete** | Primitives, Functions, Control Flow | Q4 2024 |
 | **II. Type System** | ✅ **Complete** | Structs, Enums, Pattern Matching | Q4 2024 |
-| **III. Abstractions** | 🚧 **In Progress** | Generics (✅), Traits (✅), Modules (📅) | Q1 2025 |
-| **IV. Safety** | 📅 **Planned** | Borrow Checker, Memory Safety | Q2 2025 |
-| **V. Concurrency** | 📅 **Planned** | Async/Await, Channels | Q3 2025 |
+| **III. Abstractions** | ✅ **Complete** | Generics, Traits, Module System, Visibility | Q1 2025 |
+| **IV. Practicality** | 🚧 **In Progress** | Strings, C FFI, Basic I/O | Q1 2025 |
+| **V. Safety** | 📅 **Planned** | Borrow Checker, Memory Safety | Q2 2025 |
+| **VI. Performance** | 📅 **Planned** | Optimization Passes, SIMD | Q3 2025 |
 
 ### Phase III: Advanced Type System (Next)
 

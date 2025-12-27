@@ -8,7 +8,9 @@ from forgec.ast_nodes import (
     EnumDef, EnumVariant, EnumInstantiationExpr,
     Pattern, EnumPattern, MatchArm, MatchExpr,
     TypeParameter, TypeRef,
-    TraitDef, ImplBlock, TraitMethod  # NEW
+    TypeParameter, TypeRef,
+    TraitDef, ImplBlock, TraitMethod,
+    ModDecl, UseDecl  # NEW
 )
 
 class Parser:
@@ -23,18 +25,30 @@ class Parser:
         enums = []
         traits = []
         impls = []
+        modules = []
+        imports = []
         while not self._is_at_end():
             try:
+                is_public = False
+                if self._match(TokenType.PUB):
+                    is_public = True
+
                 if self._check(TokenType.FN):
-                    functions.append(self._function_def())
+                    functions.append(self._function_def(is_public))
                 elif self._check(TokenType.STRUCT):
-                    structs.append(self._struct_def())
+                    structs.append(self._struct_def(is_public))
                 elif self._check(TokenType.ENUM):
-                    enums.append(self._enum_def())
+                    enums.append(self._enum_def(is_public))
                 elif self._check(TokenType.TRAIT):
-                    traits.append(self._trait_def())
+                    traits.append(self._trait_def(is_public))
                 elif self._check(TokenType.IMPL):
+                    if is_public:
+                        self._error("'pub' is not allowed on impl blocks")
                     impls.append(self._impl_block())
+                elif self._check(TokenType.MOD):
+                    modules.append(self._mod_decl(is_public))
+                elif self._check(TokenType.USE):
+                    imports.append(self._use_decl(is_public))
                 else:
                     # For now, we only allow top-level functions, structs, and enums
                     self._error("Expected function, struct, enum, trait, or impl definition")
@@ -47,11 +61,35 @@ class Parser:
         if self.tokens:
             span = Span(self.tokens[0].span.start, self.tokens[-1].span.end, 0, 0)
             
-        return Program(span, structs, enums, traits, impls, functions)
+        return Program(span, structs, enums, traits, impls, functions, modules, imports)
 
     # --- Declarations ---
 
-    def _function_def(self) -> FunctionDef:
+    def _mod_decl(self, is_public: bool = False) -> ModDecl:
+        start_token = self._consume(TokenType.MOD, "Expected 'mod'")
+        name = self._consume(TokenType.IDENTIFIER, "Expected module name").lexeme
+        self._consume(TokenType.SEMICOLON, "Expected ';' after module declaration")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return ModDecl(span, name, is_public)
+
+    def _use_decl(self, is_public: bool = False) -> UseDecl:
+        start_token = self._consume(TokenType.USE, "Expected 'use'")
+        
+        # Parse path: std::io::print
+        path_parts = []
+        path_parts.append(self._consume(TokenType.IDENTIFIER, "Expected import path").lexeme)
+        
+        while self._match(TokenType.COLONCOLON):
+            path_parts.append(self._consume(TokenType.IDENTIFIER, "Expected identifier after '::'").lexeme)
+            
+        path = "::".join(path_parts)
+        self._consume(TokenType.SEMICOLON, "Expected ';' after use declaration")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return UseDecl(span, path, is_public)
+
+    def _function_def(self, is_public: bool = False) -> FunctionDef:
         start_token = self._consume(TokenType.FN, "Expected 'fn'")
         name = self._consume(TokenType.IDENTIFIER, "Expected function name").lexeme
         
@@ -89,9 +127,9 @@ class Parser:
         body = self._block()
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return FunctionDef(span, name, type_params, params, return_type, body)
+        return FunctionDef(span, name, type_params, params, return_type, body, is_public)
 
-    def _struct_def(self) -> StructDef:
+    def _struct_def(self, is_public: bool = False) -> StructDef:
         start_token = self._consume(TokenType.STRUCT, "Expected 'struct'")
         name = self._consume(TokenType.IDENTIFIER, "Expected struct name").lexeme
         
@@ -113,9 +151,9 @@ class Parser:
         self._consume(TokenType.RBRACE, "Expected '}' after struct fields")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return StructDef(span, name, type_params, fields)
+        return StructDef(span, name, type_params, fields, is_public)
 
-    def _enum_def(self) -> EnumDef:
+    def _enum_def(self, is_public: bool = False) -> EnumDef:
         start_token = self._consume(TokenType.ENUM, "Expected 'enum'")
         name = self._consume(TokenType.IDENTIFIER, "Expected enum name").lexeme
         
@@ -144,9 +182,9 @@ class Parser:
         self._consume(TokenType.RBRACE, "Expected '}' after enum variants")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return EnumDef(span, name, type_params, variants)
+        return EnumDef(span, name, type_params, variants, is_public)
 
-    def _trait_def(self) -> TraitDef:
+    def _trait_def(self, is_public: bool = False) -> TraitDef:
         """Parse: trait Name { fn method(self) -> type; }"""
         start_token = self._consume(TokenType.TRAIT, "Expected 'trait'")
         name = self._consume(TokenType.IDENTIFIER, "Expected trait name").lexeme
@@ -158,7 +196,7 @@ class Parser:
         self._consume(TokenType.RBRACE, "Expected '}'")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return TraitDef(span, name, methods)
+        return TraitDef(span, name, methods, is_public)
 
     def _parse_trait_method(self) -> TraitMethod:
         """Parse method signature: fn name(self) -> type;"""
@@ -368,15 +406,23 @@ class Parser:
         if self._match(TokenType.IDENTIFIER):
             identifier_token = self.tokens[self.current-1]
             
-            # Check for type arguments first: Box<int>
-            type_args = self._parse_type_args()
+            # Check for qualified path: math::add or Option<int>::Some
+            path = [identifier_token.lexeme]
+            type_args = []
             
-            # Check for enum instantiation (e.g., Option<int>::Some(42))
-            if self._check(TokenType.COLONCOLON):
-                # Create a temporary token with type args for _enum_instantiation
-                return self._enum_instantiation(identifier_token, type_args)
+            # If the first segment has type args: Box<int>::new
+            if self._check(TokenType.LT) and self._is_type_argument_context():
+                type_args = self._parse_type_args()
             
-            # Check if this is a struct instantiation (e.g., Box<int> { value: 10 })
+            while self._match(TokenType.COLONCOLON):
+                path.append(self._consume(TokenType.IDENTIFIER, "Expected identifier after '::'").lexeme)
+                # If subsequent segments have type args (less common but possible in some languages)
+                # For Forge, let's assume only one set of type args is allowed for now, 
+                # either on the first segment (Box<int>::new) or the last (Option::Some<int> - though Forge doesn't support this yet)
+                if not type_args and self._check(TokenType.LT) and self._is_type_argument_context():
+                    type_args = self._parse_type_args()
+            
+            # Check if this is a struct instantiation (e.g., Box<int> { value: 10 } or math::Point { ... })
             if self._check(TokenType.LBRACE):
                 is_struct = False
                 # Look ahead
@@ -387,19 +433,23 @@ class Parser:
                     is_struct = True # Box<int> { x: ... }
                 
                 if is_struct:
-                    return self._struct_instantiation(identifier_token, type_args)
+                    return self._struct_instantiation_path(path, type_args)
             
-            # If type_args were parsed but not used for instantiation, it's an error or a variable with type args (which is not allowed here)
-            if type_args:
-                raise self._error("Type arguments are only allowed for struct or enum instantiations here.")
-
-            # Check for function call: foo(...)
+            # Check for function call: foo(...) or math::add(...)
             if self._check(TokenType.LPAREN):
                 args = self._parse_args()
                 span = Span(identifier_token.span.start, self.tokens[self.current-1].span.end, identifier_token.span.line, 0)
-                return CallExpr(span, identifier_token.lexeme, args)
+                return CallExpr(span, path, args)
 
-            return VariableExpr(identifier_token.span, identifier_token.lexeme)
+            # Check for enum instantiation (e.g., Option<int>::Some(42))
+            # If we have a path and it looks like an enum (handled by _enum_instantiation_path)
+            # This is a bit ambiguous with VariableExpr if it's just a path.
+            # In Forge, enum variants are accessed via ::.
+            # If the last segment is a variant, it should be handled.
+            # For now, if it's a path with ::, we'll try to resolve it in semantic analysis.
+            # But if it has payload '(', it's a CallExpr or EnumInstantiation.
+            
+            return VariableExpr(identifier_token.span, path)
             
         if self._match(TokenType.SELF):
             return VariableExpr(self.tokens[self.current-1].span, "self")
@@ -432,14 +482,9 @@ class Parser:
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
         return IfExpr(span, condition, then_branch, else_branch)
 
-    def _struct_instantiation(self, struct_name_token: Token, type_args: List[TypeRef] = None) -> StructInstantiationExpr:
+    def _struct_instantiation_path(self, path: List[str], type_args: List[TypeRef] = None) -> StructInstantiationExpr:
         # Box<int> { value: 42 } or Point { x: 10, y: 20 }
-        start_span = struct_name_token.span
-        struct_name = struct_name_token.lexeme
-        
-        # Parse type arguments if not already provided
-        if type_args is None:
-            type_args = self._parse_type_args()
+        start_span = self.tokens[self.current-1].span # Approximate
         
         self._consume(TokenType.LBRACE, "Expected '{' for struct instantiation")
         field_values = []
@@ -456,19 +501,20 @@ class Parser:
         self._consume(TokenType.RBRACE, "Expected '}' after struct fields")
         
         span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
-        return StructInstantiationExpr(span, struct_name, type_args, field_values)
+        return StructInstantiationExpr(span, path, type_args or [], field_values)
 
-    def _enum_instantiation(self, enum_name_token: Token, type_args: List[TypeRef] = None) -> EnumInstantiationExpr:
+    def _enum_instantiation_path(self, path: List[str], type_args: List[TypeRef] = None) -> EnumInstantiationExpr:
         # Option<int>::Some(42) or Option::None
-        start_span = enum_name_token.span
-        enum_name = enum_name_token.lexeme
+        # Note: path already contains the variant name as the last element if it was parsed in _primary
+        # But wait, _enum_instantiation was called when we saw ::.
+        # If path is ["Option", "Some"], then enum_path is ["Option"] and variant is "Some".
+        if len(path) < 2:
+            raise self._error("Expected qualified path for enum instantiation")
+            
+        enum_path = path[:-1]
+        variant_name = path[-1]
         
-        # Parse type arguments if not already provided
-        if type_args is None:
-            type_args = self._parse_type_args()
-        
-        self._consume(TokenType.COLONCOLON, "Expected '::' for enum variant")
-        variant_name = self._consume(TokenType.IDENTIFIER, "Expected variant name").lexeme
+        start_span = self.tokens[self.current-1].span # Approximate
         
         payload = None
         # Check for payload
@@ -477,7 +523,7 @@ class Parser:
             self._consume(TokenType.RPAREN, "Expected ')' after payload")
         
         span = Span(start_span.start, self.tokens[self.current-1].span.end, start_span.line, 0)
-        return EnumInstantiationExpr(span, enum_name, type_args, variant_name, payload)
+        return EnumInstantiationExpr(span, enum_path, type_args or [], variant_name, payload)
 
     def _match_expression(self) -> MatchExpr:
         # match value { Option::Some(x) => { ... }, Option::None => { ... } }
@@ -606,7 +652,10 @@ class Parser:
     def _parse_type_ref(self) -> TypeRef:
         """Parse type reference: int, Box<int>, Option<Box<bool>>. Handles nested generics."""
         start_token = self._consume(TokenType.IDENTIFIER, "Expected type name")
-        name = start_token.lexeme
+        path = [start_token.lexeme]
+        
+        while self._match(TokenType.COLONCOLON):
+            path.append(self._consume(TokenType.IDENTIFIER, "Expected identifier after '::'").lexeme)
         
         type_args = []
         # Check if generic type (use lookahead to avoid confusion with < operator)
@@ -622,7 +671,7 @@ class Parser:
             self._consume(TokenType.GT, "Expected '>' after type arguments")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return TypeRef(span, name, type_args)
+        return TypeRef(span, path, type_args)
     
     def _is_type_argument_context(self) -> bool:
         """Disambiguate < as generic vs comparison.  Returns True for type argument context."""

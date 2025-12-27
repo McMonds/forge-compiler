@@ -18,14 +18,16 @@ class TypeParameter(ASTNode):
 @dataclass  
 class TypeRef(ASTNode):
     """Reference to a type (possibly generic)"""
-    name: str                           # e.g., "Box", "int", "T"
+    path: List[str]                     # e.g., ["std", "Box"], ["int"], ["T"]
     type_args: List['TypeRef']          # e.g., [TypeRef("int")] for Box<int>
+    resolved_name: Optional[str] = None # Populated by TypeChecker
     
     def __str__(self) -> str:
+        name = "::".join(self.path)
         if not self.type_args:
-            return self.name
+            return name
         args_str = ", ".join(str(arg) for arg in self.type_args)
-        return f"{self.name}<{args_str}>"
+        return f"{name}<{args_str}>"
 
 # Expressions
 @dataclass
@@ -39,7 +41,8 @@ class LiteralExpr(Expr):
 
 @dataclass
 class VariableExpr(Expr):
-    name: str
+    path: List[str] # e.g., ["math", "PI"] or ["x"]
+    resolved_name: Optional[str] = None # NEW: Populated by TypeChecker
 
 @dataclass
 class BinaryExpr(Expr):
@@ -49,8 +52,9 @@ class BinaryExpr(Expr):
 
 @dataclass
 class CallExpr(Expr):
-    callee: str
+    callee_path: List[str] # e.g., ["math", "add"] or ["foo"]
     arguments: List[Expr]
+    resolved_name: Optional[str] = None # NEW: Populated by TypeChecker
 
 @dataclass
 class MethodCallExpr(Expr):
@@ -98,12 +102,14 @@ class StructDef(Stmt):
     name: str
     type_params: List[TypeParameter]      # NEW: Generic parameters like <T, U>
     fields: List[tuple[str, TypeRef]]      # Changed from str to TypeRef
+    is_public: bool = False                # For module system
 
 @dataclass
 class StructInstantiationExpr(Expr):
-    struct_name: str
+    struct_path: List[str]
     type_args: List[TypeRef]               # NEW: Type arguments like Box<int>
     field_values: List[tuple[str, Expr]]   # (field_name, value)
+    resolved_name: Optional[str] = None    # NEW: Populated by TypeChecker
 
 @dataclass
 class FieldAccessExpr(Expr):
@@ -121,13 +127,15 @@ class EnumDef(Stmt):
     name: str
     type_params: List[TypeParameter]       # NEW: Generic parameters
     variants: List[EnumVariant]
+    is_public: bool = False                # For module system
 
 @dataclass
 class EnumInstantiationExpr(Expr):
-    enum_name: str
+    enum_path: List[str]
     type_args: List[TypeRef]               # NEW: Type arguments
     variant_name: str
     payload: Optional[Expr]  # None for unit variants
+    resolved_name: Optional[str] = None    # NEW: Populated by TypeChecker
 
 # Pattern matching nodes
 @dataclass
@@ -164,6 +172,7 @@ class TraitDef(Stmt):
     """Trait definition: trait Display { fn show(self) -> int; }"""
     name: str
     methods: List[TraitMethod]
+    is_public: bool = False
 
 @dataclass
 class ImplBlock(Stmt):
@@ -173,6 +182,21 @@ class ImplBlock(Stmt):
     type_args: List[TypeRef] # For generic types: impl Display for Box<int>
     methods: List[FunctionDef]
 
+# --- Modules ---
+
+@dataclass
+class ModDecl(Stmt):
+    """Module declaration: mod name;"""
+    name: str
+    is_public: bool = False
+    body: Optional['Program'] = None # Populated during module resolution
+
+@dataclass
+class UseDecl(Stmt):
+    """Import declaration: use path::to::symbol;"""
+    path: str  # e.g., "std::io::print"
+    is_public: bool = False
+
 @dataclass
 class Program(ASTNode):
     structs: List[StructDef]
@@ -180,3 +204,5 @@ class Program(ASTNode):
     traits: List[TraitDef]    # NEW
     impls: List[ImplBlock]    # NEW
     functions: List[FunctionDef]
+    modules: List[ModDecl]    # NEW
+    imports: List[UseDecl]    # NEW

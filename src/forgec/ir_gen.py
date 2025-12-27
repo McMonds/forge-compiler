@@ -37,118 +37,160 @@ class IRGenerator:
         # Example: ("Box", ("int",)) -> %Box_int = { i32 }
         
         # Store original definitions for monomorphization
-        # Store original definitions for monomorphization
-        self.struct_defs: Dict[str, StructDef] = {s.name: s for s in program.structs}
-        self.enum_defs: Dict[str, EnumDef] = {e.name: e for e in program.enums}
+        self.struct_defs: Dict[str, StructDef] = {}
+        self.enum_defs: Dict[str, EnumDef] = {}
+        self._populate_defs(program)
         
         self.trait_impls: Dict[tuple, ImplBlock] = {}
         self.current_self_type: Optional[ir.Type] = None # Track 'Self' type for impl blocks
-        self.enum_defs: Dict[str, EnumDef] = {e.name: e for e in program.enums}
+        
+    def _populate_defs(self, program: Program, prefix: str = ""):
+        for s in program.structs:
+            name = f"{prefix}{s.name}"
+            self.struct_defs[name] = s
+        for e in program.enums:
+            name = f"{prefix}{e.name}"
+            self.enum_defs[name] = e
+        for m in program.modules:
+            if m.body:
+                self._populate_defs(m.body, f"{prefix}{m.name}::")
         
         # NEW: Traits system
         self.trait_impls: Dict[tuple, ImplBlock] = {}  # (trait_name, type_name) -> ImplBlock
 
     def generate(self, program: Program) -> str:
+        # Pass 1: Register all types and function prototypes across all modules
+        self._register_prototypes(program)
+        
+        # Pass 2: Generate function bodies and impl blocks
+        self._generate_bodies(program)
+        
+        return str(self.module)
+
+    def _register_prototypes(self, program: Program, prefix: str = ""):
         # Register struct types
         for struct in program.structs:
-            self._register_struct_type(struct)
+            self._register_struct_type(struct, prefix)
         
         # Register enum types
         for enum in program.enums:
-            self._register_enum_type(enum)
+            self._register_enum_type(enum, prefix)
             
-        # Register impl blocks
+        # Register function prototypes
+        for func in program.functions:
+            self._register_function_prototype(func, prefix)
+            
+        # Register impl block method prototypes
         for impl in program.impls:
-            # Store for resolution: (Trait, Type) -> Impl
-            # Note: For generic types, we might need more complex key, but for now use string representation
+            type_name = impl.type_name
             if impl.type_args:
-                type_name = f"{impl.type_name}<{', '.join(str(t) for t in impl.type_args)}>"
-            else:
-                type_name = impl.type_name
+                type_name = f"{type_name}<{', '.join(str(t) for t in impl.type_args)}>"
             self.trait_impls[(impl.trait_name, type_name)] = impl
             
-            # Generate code for methods
-            self._gen_impl_block(impl)
-        
+            for method in impl.methods:
+                mangled_name = f"{prefix}{type_name}_{impl.trait_name}_{method.name}"
+                self._register_function_prototype(method, name_override=mangled_name)
+
+        # Recurse into modules
+        for mod in program.modules:
+            if mod.body:
+                self._register_prototypes(mod.body, f"{prefix}{mod.name}::")
+
+    def _generate_bodies(self, program: Program, prefix: str = ""):
+        # Generate function bodies
         for func in program.functions:
-            self._gen_function(func)
-        return str(self.module)
-
-    def _gen_impl_block(self, impl: ImplBlock):
-        """Generate code for methods in an impl block"""
-        # For now, we only support non-generic impls or we rely on monomorphization
-        # If it's a generic impl (impl<T> Display for Box<T>), we skip generation here
-        # and generate on demand during monomorphization (similar to generic structs)
-        # BUT for Phase III simplified, we might assume concrete types or handle simple generics
-        
-        # Name mangling: {TypeName}_{TraitName}_{MethodName}
-        # e.g. Point_Display_show
-        
-        type_name = impl.type_name
-        if impl.type_args:
-            # If generic, we might skip if it's a template, or generate if it's a concrete instantiation
-            # For now, let's assume concrete instantiation or skip
-            pass 
+            self._gen_function_body(func, prefix=prefix)
             
-        # Resolve Self type
-        if type_name in self.struct_types:
-            self.current_self_type = self.struct_types[type_name]
-        elif type_name in self.enum_types:
-            self.current_self_type = self.enum_types[type_name]
-        else:
-            # Fallback or error? For now, assume it's handled elsewhere or primitive
-            pass
+        # Generate impl block bodies
+        for impl in program.impls:
+            self._gen_impl_block_bodies(impl, prefix)
             
-        for method in impl.methods:
-            mangled_name = f"{type_name}_{impl.trait_name}_{method.name}"
-            self._gen_function(method, name_override=mangled_name)
-            
-        self.current_self_type = None
+        # Recurse into modules
+        for mod in program.modules:
+            if mod.body:
+                self._generate_bodies(mod.body, f"{prefix}{mod.name}::")
 
-    def _register_struct_type(self, struct: StructDef):
-        # Skip generic structs - they'll be monomorphized on demand
-        if struct.type_params:
-            return
-        
-        # Non-generic struct: create LLVM type
-        field_types = []
-        field_schema = []
-        for field_name, field_type_ref in struct.fields:
-            # Convert TypeRef to LLVM type
-            field_type_ir = self._typeref_to_ir_type(field_type_ref)
-            field_types.append(field_type_ir)
-            field_schema.append((field_name, field_type_ref))  # Store for later
-        
-        # Create LLVM struct type
-        struct_type = ir.LiteralStructType(field_types)
-        self.struct_types[struct.name] = struct_type
-
-    def _register_enum_type(self, enum: EnumDef):
-        # Store schema for later use
-        self.enum_schemas[enum.name] = enum.variants
-        
-        # Determine the largest payload type
-        # For now, we'll use i32 as the payload type (supports int)
-        # In a real compiler, we'd determine the union of all payload types
-        payload_type = self.int_type
-        
-        # Tagged union: { i8 tag, i32 payload }
-        # tag identifies which variant is active
-        enum_type = ir.LiteralStructType([ir.IntType(8), payload_type])
-        self.enum_types[enum.name] = enum_type
-
-
-    def _gen_function(self, func: FunctionDef, name_override: str = None):
+    def _register_function_prototype(self, func: FunctionDef, prefix: str = "", name_override: str = None):
         # Determine function type
-        arg_types = []
-        for _, arg_type_ref in func.params:
-            arg_types.append(self._typeref_to_ir_type(arg_type_ref))
-            
+        arg_types = [self._typeref_to_ir_type(t) for _, t in func.params]
         ret_type = self._typeref_to_ir_type(func.return_type)
         func_type = ir.FunctionType(ret_type, arg_types)
         
         # Create function
-        func_name = name_override if name_override else func.name
+        func_name = name_override if name_override else f"{prefix}{func.name}"
+        ir.Function(self.module, func_type, name=func_name)
+
+    def _gen_function_body(self, func: FunctionDef, name_override: str = None, prefix: str = ""):
+        func_name = name_override if name_override else f"{prefix}{func.name}"
+        ir_func = self.module.globals[func_name]
+        
+        # Create entry block
+        block = ir_func.append_basic_block(name="entry")
+        self.builder = ir.IRBuilder(block)
+        self.current_func = ir_func
+        self.func_symtab = {}
+
+        # Register args
+        for i, (arg_name, _) in enumerate(func.params):
+            arg = ir_func.args[i]
+            arg.name = arg_name
+            ptr = self.builder.alloca(arg.type, name=arg_name)
+            self.builder.store(arg, ptr)
+            self.func_symtab[arg_name] = ptr
+
+        # Generate body
+        for stmt in func.body:
+            self._gen_stmt(stmt)
+
+        # Add implicit return void if needed
+        if ir_func.return_value.type == self.void_type and not block.is_terminated:
+            self.builder.ret_void()
+
+    def _gen_impl_block_bodies(self, impl: ImplBlock, prefix: str = ""):
+        type_name = impl.type_name
+        # Resolve Self type
+        if f"{prefix}{type_name}" in self.struct_types:
+            self.current_self_type = self.struct_types[f"{prefix}{type_name}"]
+        elif f"{prefix}{type_name}" in self.enum_types:
+            self.current_self_type = self.enum_types[f"{prefix}{type_name}"]
+        
+        for method in impl.methods:
+            mangled_name = f"{prefix}{type_name}_{impl.trait_name}_{method.name}"
+            self._gen_function_body(method, name_override=mangled_name, prefix=prefix)
+            
+        self.current_self_type = None
+
+    def _register_struct_type(self, struct: StructDef, prefix: str = ""):
+        # Skip generic structs - they'll be monomorphized on demand
+        if struct.type_params:
+            return
+        
+        full_name = f"{prefix}{struct.name}"
+        # ...
+        field_types = []
+        for _, field_type_ref in struct.fields:
+            field_types.append(self._typeref_to_ir_type(field_type_ref))
+        
+        struct_type = ir.LiteralStructType(field_types)
+        self.struct_types[full_name] = struct_type
+
+    def _register_enum_type(self, enum: EnumDef, prefix: str = ""):
+        full_name = f"{prefix}{enum.name}"
+        self.enum_schemas[full_name] = enum.variants
+        
+        payload_type = self.int_type
+        enum_type = ir.LiteralStructType([ir.IntType(8), payload_type])
+        self.enum_types[full_name] = enum_type
+
+
+    def _gen_function(self, func: FunctionDef, name_override: str = None, prefix: str = ""):
+        # Determine function type
+        arg_types = [self._typeref_to_ir_type(t) for _, t in func.params]
+        ret_type = self._typeref_to_ir_type(func.return_type)
+        func_type = ir.FunctionType(ret_type, arg_types)
+        
+        # Create function
+        func_name = name_override if name_override else f"{prefix}{func.name}"
         ir_func = ir.Function(self.module, func_type, name=func_name)
         
         # Create entry block
@@ -209,11 +251,17 @@ class IRGenerator:
                 return ir.Constant(self.bool_type, 1 if expr.value else 0)
         
         if isinstance(expr, VariableExpr):
-            ptr = self.func_symtab.get(expr.name)
-            if not ptr:
-                # Should have been caught by semantic analysis
-                raise Exception(f"Codegen error: Undefined variable {expr.name}")
-            return self.builder.load(ptr, name=expr.name)
+            # If it's a local variable, it's in func_symtab
+            if len(expr.path) == 1 and expr.path[0] in self.func_symtab:
+                ptr = self.func_symtab[expr.path[0]]
+                return self.builder.load(ptr, name=expr.path[0])
+            
+            # If it's a global/qualified variable (resolved by TypeChecker)
+            if expr.resolved_name and expr.resolved_name in self.module.globals:
+                var = self.module.globals[expr.resolved_name]
+                return self.builder.load(var, name=expr.resolved_name)
+            
+            raise Exception(f"Codegen error: Undefined variable {'::'.join(expr.path)}")
 
         if isinstance(expr, BinaryExpr):
             lhs = self._gen_expr(expr.left)
@@ -264,26 +312,23 @@ class IRGenerator:
         return ir.Constant(self.int_type, 0) # Fallback
 
     def _gen_struct_instantiation(self, expr: StructInstantiationExpr) -> ir.Value:
+        struct_name = expr.resolved_name if expr.resolved_name else "::".join(expr.struct_path)
         # Get the appropriate struct type (monomorphized if generic)
         if expr.type_args:
-            # Generic instantiation: Box<int> { value: 42 }
-            struct_type = self._monomorphize_struct(expr.struct_name, expr.type_args)
-            struct_def = self.struct_defs[expr.struct_name]
-            schema = struct_def.fields  # Use original definition fields
+            struct_type = self._monomorphize_struct(struct_name, expr.type_args)
+            struct_def = self.struct_defs[struct_name]
+            schema = struct_def.fields
         else:
-            # Non-generic: Point { x: 10, y: 20 }
-            struct_type = self.struct_types[expr.struct_name]
-            schema = self.struct_defs[expr.struct_name].fields
+            struct_type = self.struct_types[struct_name]
+            schema = self.struct_defs[struct_name].fields
         
-        # Create an undefined struct value
         struct_val = ir.Constant(struct_type, ir.Undefined)
         
-        # Insert each field value
         field_map = {name: value_expr for name, value_expr in expr.field_values}
         for idx, (field_name, _) in enumerate(schema):
             if field_name in field_map:
                 field_value = self._gen_expr(field_map[field_name])
-                struct_val = self.builder.insert_value(struct_val, field_value, idx, name=f"{expr.struct_name}.{field_name}")
+                struct_val = self.builder.insert_value(struct_val, field_value, idx, name=f"{struct_name}.{field_name}")
         
         return struct_val
 
@@ -314,33 +359,25 @@ class IRGenerator:
         return self.builder.extract_value(obj, field_idx, name=expr.field_name)
 
     def _gen_enum_instantiation(self, expr: EnumInstantiationExpr) -> ir.Value:
+        enum_name = expr.resolved_name if expr.resolved_name else "::".join(expr.enum_path)
         # Get the appropriate enum type (monomorphized if generic)
         if expr.type_args:
-            # Generic instantiation: Option<int>::Some(42)
-            enum_type = self._monomorphize_enum(expr.enum_name, expr.type_args)
-            enum_def = self.enum_defs[expr.enum_name]
+            enum_type = self._monomorphize_enum(enum_name, expr.type_args)
+            enum_def = self.enum_defs[enum_name]
             variants = enum_def.variants
         else:
-            # Non-generic enum
-            enum_type = self.enum_types[expr.enum_name]
-            variants = self.enum_schemas[expr.enum_name]
+            enum_type = self.enum_types[enum_name]
+            variants = self.enum_schemas[enum_name]
         
-        # Find variant index (tag)
         tag = next(i for i, v in enumerate(variants) if v.name == expr.variant_name)
-        
-        # Create tagged union: { i8 tag, payload }
         tag_constant = ir.Constant(ir.IntType(8), tag)
         tagged_union = self.builder.insert_value(ir.Constant(enum_type, ir.Undefined), tag_constant, 0)
         
-        # Insert payload if exists
         variant = next(v for v in variants if v.name == expr.variant_name)
         if variant.payload_type and expr.payload:
             payload_val = self._gen_expr(expr.payload)
             tagged_union = self.builder.insert_value(tagged_union, payload_val, 1)
         else:
-            # Unit variant - insert zero payload
-            # The type of the zero payload must match the second element of the enum_type
-            # which is the largest payload type determined during monomorphization.
             payload_ir_type = enum_type.elements[1]
             zero = ir.Constant(payload_ir_type, 0)
             tagged_union = self.builder.insert_value(tagged_union, zero, 1)
@@ -348,17 +385,12 @@ class IRGenerator:
         return tagged_union
 
     def _gen_call_expression(self, expr: CallExpr) -> ir.Value:
-        # 1. Look up function
-        if expr.callee not in self.module.globals:
-             # Should have been caught by semantic analysis
-             raise Exception(f"Codegen error: Undefined function {expr.callee}")
+        func_name = expr.resolved_name if expr.resolved_name else "::".join(expr.callee_path)
+        if func_name not in self.module.globals:
+             raise Exception(f"Codegen error: Undefined function {func_name}")
              
-        func = self.module.globals[expr.callee]
-        
-        # 2. Generate arguments
+        func = self.module.globals[func_name]
         args = [self._gen_expr(arg) for arg in expr.arguments]
-        
-        # 3. Call
         return self.builder.call(func, args)
 
     def _gen_method_call_expr(self, expr: MethodCallExpr) -> ir.Value:
@@ -517,38 +549,38 @@ class IRGenerator:
         if type_subst is None:
             type_subst = {}
         
+        name = type_ref.resolved_name if type_ref.resolved_name else "::".join(type_ref.path)
+        
         # Check if it's a type parameter that should be substituted
-        if type_ref.name in type_subst:
-            return type_subst[type_ref.name]
+        if name in type_subst:
+            return type_subst[name]
             
         # Check for Self type
-        if type_ref.name == "Self" and self.current_self_type:
+        if name == "Self" and self.current_self_type:
             return self.current_self_type
         
         # Primitive types
-        if type_ref.name == "int":
+        if name == "int":
             return self.int_type
-        elif type_ref.name == "bool":
+        elif name == "bool":
             return self.bool_type
-        elif type_ref.name == "void":
+        elif name == "void":
             return self.void_type
         
         # Generic struct
-        if type_ref.name in self.struct_defs:
+        if name in self.struct_defs:
             if type_ref.type_args:
-                return self._monomorphize_struct(type_ref.name, type_ref.type_args)
+                return self._monomorphize_struct(name, type_ref.type_args)
             else:
-                # Non-generic struct (or generic with no args - error, but handled elsewhere)
-                return self.struct_types.get(type_ref.name, self.int_type)
+                return self.struct_types.get(name, self.int_type)
         
         # Generic enum
-        if type_ref.name in self.enum_defs:
+        if name in self.enum_defs:
             if type_ref.type_args:
-                return self._monomorphize_enum(type_ref.name, type_ref.type_args)
+                return self._monomorphize_enum(name, type_ref.type_args)
             else:
-                return self.enum_types.get(type_ref.name, self.int_type)
+                return self.enum_types.get(name, self.int_type)
         
-        # Fallback
         return self.int_type
     
     def _monomorphize_struct(self, struct_name: str, type_args: list) -> ir.Type:
@@ -625,10 +657,11 @@ class IRGenerator:
     
     def _typeref_to_string(self, type_ref: TypeRef) -> str:
         """Convert TypeRef to string for cache keys"""
+        name = "::".join(type_ref.path)
         if not type_ref.type_args:
-            return type_ref.name
+            return name
         args_str = '_'.join(self._typeref_to_string(arg) for arg in type_ref.type_args)
-        return f"{type_ref.name}_{args_str}"
+        return f"{name}_{args_str}"
 
     def _gen_if(self, expr: IfExpr) -> ir.Value:
         # 1. Generate condition
