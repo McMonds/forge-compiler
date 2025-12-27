@@ -7,7 +7,8 @@ from forgec.ast_nodes import (
     EnumDef, EnumInstantiationExpr,
     MatchExpr, EnumPattern,
     TypeParameter, TypeRef,
-    ImplBlock
+    ImplBlock,
+    ExternBlock, ExternFunc # NEW
 )
 from forgec.diagnostics import DiagnosticEngine
 
@@ -23,6 +24,7 @@ class IRGenerator:
         self.int_type = ir.IntType(32)
         self.bool_type = ir.IntType(1)
         self.void_type = ir.VoidType()
+        self.string_type = ir.IntType(8).as_pointer()
         
         # Struct types
         self.struct_types: Dict[str, ir.Type] = {}  # struct_name -> LLVM struct type
@@ -91,6 +93,11 @@ class IRGenerator:
                 mangled_name = f"{prefix}{type_name}_{impl.trait_name}_{method.name}"
                 self._register_function_prototype(method, name_override=mangled_name)
 
+        # Register external functions
+        for block in program.extern_blocks:
+            for func in block.functions:
+                self._register_extern_function(func)
+
         # Recurse into modules
         for mod in program.modules:
             if mod.body:
@@ -119,6 +126,15 @@ class IRGenerator:
         # Create function
         func_name = name_override if name_override else f"{prefix}{func.name}"
         ir.Function(self.module, func_type, name=func_name)
+
+    def _register_extern_function(self, func: ExternFunc):
+        # Extern functions are declared but not defined
+        param_types = [self._typeref_to_ir_type(p_type) for _, p_type in func.params]
+        ret_type = self._typeref_to_ir_type(func.return_type)
+        
+        fnty = ir.FunctionType(ret_type, param_types)
+        # Use the function name directly (no mangling for extern "C")
+        ir.Function(self.module, fnty, name=func.name)
 
     def _gen_function_body(self, func: FunctionDef, name_override: str = None, prefix: str = ""):
         func_name = name_override if name_override else f"{prefix}{func.name}"
@@ -249,6 +265,20 @@ class IRGenerator:
                 return ir.Constant(self.int_type, expr.value)
             elif expr.type_name == "bool":
                 return ir.Constant(self.bool_type, 1 if expr.value else 0)
+            elif expr.type_name == "string":
+                # Create a global constant for the string
+                text = expr.value + "\0"
+                text_bytes = bytearray(text.encode("utf-8"))
+                c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(text_bytes)), text_bytes)
+                global_name = self.module.get_unique_name("str")
+                g_str = ir.GlobalVariable(self.module, c_str.type, name=global_name)
+                g_str.initializer = c_str
+                g_str.global_constant = True
+                g_str.linkage = "internal"
+                
+                # Get pointer to first element: i8*
+                ptr = self.builder.gep(g_str, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+                return ptr
         
         if isinstance(expr, VariableExpr):
             # If it's a local variable, it's in func_symtab
@@ -560,12 +590,10 @@ class IRGenerator:
             return self.current_self_type
         
         # Primitive types
-        if name == "int":
-            return self.int_type
-        elif name == "bool":
-            return self.bool_type
-        elif name == "void":
-            return self.void_type
+        if name == "int": return self.int_type
+        if name == "bool": return self.bool_type
+        if name == "void": return self.void_type
+        if name == "string": return self.string_type
         
         # Generic struct
         if name in self.struct_defs:

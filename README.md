@@ -25,7 +25,7 @@
 
 ## ✨ Features
 
-Forge is currently in **Phase III (Complete)**, offering a powerful type system with generics, traits, and a robust module system.
+Forge is currently in **Phase IV (Complete)**, offering a powerful type system with generics, traits, a robust module system, strings, C FFI, and a basic standard library.
 
 ### 🛡️ Static Type System
 - **Strong Type Checking**: All types verified at compile time
@@ -189,11 +189,10 @@ When parsing `match x { ...}`, the parser would incorrectly interpret `x {` as t
 if self._check(TokenType.LBRACE):
     is_struct = False
     # Lookahead to verify it's actually a struct
-    if self.tokens[self.current + 1].type == TokenType.RBRACE:
-        is_struct = True  # Empty struct: Point {}
-    elif (self.tokens[self.current + 1].type == TokenType.IDENTIFIER and 
-          self.tokens[self.current + 2].type == TokenType.COLON):
-        is_struct = True  # Field syntax: Point { x: ... }
+    if (self.tokens[self.current + 1].type == TokenType.RBRACE or
+        (self.tokens[self.current + 1].type == TokenType.IDENTIFIER and
+         self.tokens[self.current + 2].type == TokenType.COLON)):
+        is_struct = True
     
     if is_struct:
         return self._struct_instantiation(identifier_token)
@@ -706,11 +705,11 @@ forge/
 | **I. Core Calculus** | ✅ **Complete** | Primitives, Functions, Control Flow | Q4 2024 |
 | **II. Type System** | ✅ **Complete** | Structs, Enums, Pattern Matching | Q4 2024 |
 | **III. Abstractions** | ✅ **Complete** | Generics, Traits, Module System, Visibility | Q1 2025 |
-| **IV. Practicality** | 🚧 **In Progress** | Strings, C FFI, Basic I/O | Q1 2025 |
+| **IV. Practicality** | ✅ **Complete** | Strings, C FFI, Basic I/O | Q1 2025 |
 | **V. Safety** | 📅 **Planned** | Borrow Checker, Memory Safety | Q2 2025 |
 | **VI. Performance** | 📅 **Planned** | Optimization Passes, SIMD | Q3 2025 |
 
-### Phase III: Advanced Type System (Next)
+### Phase V: Safety (Next)
 
 **Generics:**
 ```rust

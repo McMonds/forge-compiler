@@ -1,0 +1,7 @@
+extern "C" {
+    fn puts(s: string) -> int;
+}
+
+pub fn print(s: string) -> int {
+    return puts(s);
+}

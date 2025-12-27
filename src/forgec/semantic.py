@@ -10,7 +10,8 @@ from forgec.ast_nodes import (
     TraitDef, ImplBlock, TraitMethod,
     TraitDef, ImplBlock, TraitMethod,
     CallExpr, MethodCallExpr,
-    ModDecl, UseDecl # NEW
+    ModDecl, UseDecl, # NEW
+    ExternBlock, ExternFunc # NEW
 )
 from forgec.diagnostics import DiagnosticEngine, Span
 
@@ -82,6 +83,9 @@ class TypeChecker:
         # Pass 1: Register all types and modules across the entire tree
         self._pass_register_types_and_modules(program, prefix)
         
+        # Pass 1.5: Register all external functions
+        self._pass_register_externals(program)
+        
         # Pass 2: Register all functions across the entire tree
         self._pass_register_functions(program, prefix)
         
@@ -137,6 +141,31 @@ class TypeChecker:
                 new_prefix = f"{prefix}{mod.name}::"
                 self._pass_register_types_and_modules(mod.body, new_prefix)
                 self.current_scope = old_scope
+
+    def _pass_register_externals(self, program: Program):
+        for block in program.extern_blocks:
+            for func in block.functions:
+                # Register in global scope
+                param_types = [self._check_type_ref(p_type) for _, p_type in func.params]
+                ret_type = self._check_type_ref(func.return_type)
+                type_str = f"fn({', '.join(param_types)}) -> {ret_type}"
+                
+                # Extern functions are always public and global
+                if not self.global_scope.define(func.name, type_str, func.span, is_public=True, full_name=func.name):
+                    # It's okay if it's already defined (e.g., in another module)
+                    pass
+                
+                # Store in function_schemas for call checking
+                # We wrap ExternFunc in a dummy FunctionDef for compatibility
+                dummy_func = FunctionDef(func.span, func.name, [], 
+                                         [ (name, t) for name, t in func.params ], 
+                                         func.return_type, [], is_public=True)
+                self.function_schemas[func.name] = dummy_func
+        
+        # Recurse into modules
+        for mod in program.modules:
+            if mod.body:
+                self._pass_register_externals(mod.body)
 
     def _pass_register_functions(self, program: Program, prefix: str = ""):
         # Register functions in current scope
@@ -777,7 +806,7 @@ class TypeChecker:
             return name
         
         # Is it a primitive type?
-        if name in {"int", "bool", "void"}:
+        if name in {"int", "bool", "void", "string"}:
             if type_ref.type_args:
                 self.diagnostics.error(
                     f"Primitive type '{name}' cannot have type arguments",

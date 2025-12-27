@@ -1194,5 +1194,76 @@ fn main() -> int {
 
 ---
 
-**Forge User Manual v0.3.0**  
+---
+
+## 17. C FFI
+
+Forge allows you to call functions from C libraries using `extern` blocks.
+
+### 17.1 Declaring External Functions
+
+```rust
+extern "C" {
+    fn puts(s: string) -> int;
+    fn malloc(size: int) -> string;
+}
+```
+
+### 17.2 Calling External Functions
+
+External functions are called like any other Forge function.
+
+```rust
+fn main() {
+    puts("Hello from C!");
+}
+```
+
+---
+
+## 18. Strings
+
+Forge supports heap-allocated string literals.
+
+```rust
+fn main() {
+    let message = "Hello, Forge!";
+}
+```
+
+Strings are currently passed as `i8*` pointers to C functions.
+
+---
+
+## 19. Standard Library
+
+Forge is building a standard library in the `std` namespace.
+
+### 19.1 `std::io`
+
+Provides basic input/output functions.
+
+```rust
+use std::io::print;
+
+fn main() {
+    print("Hello, World!");
+}
+```
+
+### 19.2 `std::mem`
+
+Provides basic memory management.
+
+```rust
+use std::mem::alloc;
+
+fn main() {
+    let ptr = alloc(1024);
+}
+```
+
+---
+
+**Forge User Manual v0.4.0**  
 *Last Updated: December 2024*

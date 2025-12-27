@@ -10,7 +10,8 @@ from forgec.ast_nodes import (
     TypeParameter, TypeRef,
     TypeParameter, TypeRef,
     TraitDef, ImplBlock, TraitMethod,
-    ModDecl, UseDecl  # NEW
+    ModDecl, UseDecl,  # NEW
+    ExternBlock, ExternFunc # NEW
 )
 
 class Parser:
@@ -27,6 +28,7 @@ class Parser:
         impls = []
         modules = []
         imports = []
+        extern_blocks = []
         while not self._is_at_end():
             try:
                 is_public = False
@@ -49,6 +51,10 @@ class Parser:
                     modules.append(self._mod_decl(is_public))
                 elif self._check(TokenType.USE):
                     imports.append(self._use_decl(is_public))
+                elif self._check(TokenType.EXTERN):
+                    if is_public:
+                        self._error("'pub' is not allowed on extern blocks")
+                    extern_blocks.append(self._extern_block())
                 else:
                     # For now, we only allow top-level functions, structs, and enums
                     self._error("Expected function, struct, enum, trait, or impl definition")
@@ -61,9 +67,45 @@ class Parser:
         if self.tokens:
             span = Span(self.tokens[0].span.start, self.tokens[-1].span.end, 0, 0)
             
-        return Program(span, structs, enums, traits, impls, functions, modules, imports)
+        return Program(span, structs, enums, traits, impls, functions, modules, imports, extern_blocks)
 
     # --- Declarations ---
+
+    def _extern_block(self) -> ExternBlock:
+        start_token = self._consume(TokenType.EXTERN, "Expected 'extern'")
+        abi = self._consume(TokenType.STRING, "Expected ABI string (e.g., \"C\")").value
+        
+        self._consume(TokenType.LBRACE, "Expected '{' after extern ABI")
+        functions = []
+        while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            functions.append(self._extern_func())
+        self._consume(TokenType.RBRACE, "Expected '}' after extern block")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return ExternBlock(span, abi, functions)
+
+    def _extern_func(self) -> ExternFunc:
+        start_token = self._consume(TokenType.FN, "Expected 'fn'")
+        name = self._consume(TokenType.IDENTIFIER, "Expected function name").lexeme
+        
+        self._consume(TokenType.LPAREN, "Expected '('")
+        params = []
+        if not self._check(TokenType.RPAREN):
+            while True:
+                p_name = self._consume(TokenType.IDENTIFIER, "Expected parameter name").lexeme
+                self._consume(TokenType.COLON, "Expected ':'")
+                p_type = self._parse_type_ref()
+                params.append((p_name, p_type))
+                if not self._match(TokenType.COMMA):
+                    break
+        self._consume(TokenType.RPAREN, "Expected ')'")
+        
+        self._consume(TokenType.ARROW, "Expected '->'")
+        return_type = self._parse_type_ref()
+        self._consume(TokenType.SEMICOLON, "Expected ';' after extern function declaration")
+        
+        span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
+        return ExternFunc(span, name, params, return_type)
 
     def _mod_decl(self, is_public: bool = False) -> ModDecl:
         start_token = self._consume(TokenType.MOD, "Expected 'mod'")
@@ -402,6 +444,8 @@ class Parser:
             return LiteralExpr(self.tokens[self.current-1].span, True, "bool")
         if self._match(TokenType.INTEGER):
             return LiteralExpr(self.tokens[self.current-1].span, self.tokens[self.current-1].value, "int")
+        if self._match(TokenType.STRING):
+            return LiteralExpr(self.tokens[self.current-1].span, self.tokens[self.current-1].value, "string")
         
         if self._match(TokenType.IDENTIFIER):
             identifier_token = self.tokens[self.current-1]

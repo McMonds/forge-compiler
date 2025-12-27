@@ -198,11 +198,23 @@ class UseDecl(Stmt):
     is_public: bool = False
 
 @dataclass
+class ExternFunc(ASTNode):
+    name: str
+    params: List[tuple[str, TypeRef]]
+    return_type: TypeRef
+
+@dataclass
+class ExternBlock(ASTNode):
+    abi: str # e.g., "C"
+    functions: List[ExternFunc]
+
+@dataclass
 class Program(ASTNode):
     structs: List[StructDef]
     enums: List[EnumDef]
-    traits: List[TraitDef]    # NEW
-    impls: List[ImplBlock]    # NEW
+    traits: List[TraitDef]
+    impls: List[ImplBlock]
     functions: List[FunctionDef]
-    modules: List[ModDecl]    # NEW
-    imports: List[UseDecl]    # NEW
+    modules: List[ModDecl]
+    imports: List[UseDecl]
+    extern_blocks: List[ExternBlock] = field(default_factory=list)

@@ -1,0 +1,8 @@
+extern "C" {
+    fn puts(s: string) -> int;
+}
+
+fn main() -> int {
+    puts("Hello from Forge via C FFI!");
+    return 0;
+}

@@ -23,9 +23,11 @@ class TokenType(Enum):
     MOD = auto()
     USE = auto()
     PUB = auto()
+    EXTERN = auto()
 
     # Literals
     INTEGER = auto()
+    STRING = auto()
     IDENTIFIER = auto()
 
     # Operators & Punctuation
@@ -89,6 +91,7 @@ class Lexer:
             (TokenType.MOD, r'\bmod\b'),
             (TokenType.USE, r'\buse\b'),
             (TokenType.PUB, r'\bpub\b'),
+            (TokenType.EXTERN, r'\bextern\b'),
             
             (TokenType.FATARROW, r'=>'),
             (TokenType.ARROW, r'->'),
@@ -112,6 +115,7 @@ class Lexer:
             (TokenType.DOT, r'\.'),
 
             (TokenType.INTEGER, r'\d+'),
+            (TokenType.STRING, r'"[^"]*"'),
             (TokenType.IDENTIFIER, r'[a-zA-Z_][a-zA-Z0-9_]*'),
         ]
         self.skip_pattern = re.compile(r'\s+|//.*') # Skip whitespace and comments
@@ -138,6 +142,8 @@ class Lexer:
                     value = None
                     if token_type == TokenType.INTEGER:
                         value = int(lexeme)
+                    elif token_type == TokenType.STRING:
+                        value = lexeme[1:-1] # Strip quotes
                     
                     self.tokens.append(Token(token_type, lexeme, span, value))
                     self._advance(len(lexeme))

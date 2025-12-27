@@ -1,0 +1,12 @@
+extern "C" {
+    fn malloc(size: int) -> string;
+    fn free(ptr: string);
+}
+
+pub fn alloc(size: int) -> string {
+    return malloc(size);
+}
+
+pub fn dealloc(ptr: string) {
+    free(ptr);
+}
