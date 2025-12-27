@@ -11,7 +11,9 @@ from forgec.ast_nodes import (
     TraitDef, ImplBlock, TraitMethod,
     CallExpr, MethodCallExpr,
     ModDecl, UseDecl, # NEW
-    ExternBlock, ExternFunc # NEW
+    ExternBlock, ExternFunc, # NEW
+    BorrowExpr, DereferenceExpr, # NEW
+    AssignmentStmt # NEW
 )
 from forgec.diagnostics import DiagnosticEngine, Span
 
@@ -21,6 +23,10 @@ class Symbol:
     type: str
     span: Span
     is_public: bool = False
+    is_mutable: bool = False # NEW: Track if declared with 'mut'
+    is_moved: bool = False # NEW: For ownership tracking
+    immutable_borrows: int = 0 # NEW: Track &T
+    has_mutable_borrow: bool = False # NEW: Track &mut T
     full_name: Optional[str] = None # NEW: For cross-module lookup
     module_scope: Optional['SymbolTable'] = None # For modules
 
@@ -29,10 +35,10 @@ class SymbolTable:
         self.symbols: Dict[str, Symbol] = {}
         self.parent = parent
 
-    def define(self, name: str, type: str, span: Span, is_public: bool = False, full_name: Optional[str] = None) -> bool:
+    def define(self, name: str, type: str, span: Span, is_public: bool = False, full_name: Optional[str] = None, is_mutable: bool = False) -> bool:
         if name in self.symbols:
             return False
-        self.symbols[name] = Symbol(name, type, span, is_public, full_name)
+        self.symbols[name] = Symbol(name, type, span, is_public, is_mutable, False, 0, False, full_name)
         return True
 
     def define_alias(self, name: str, symbol: Symbol) -> bool:
@@ -75,6 +81,9 @@ class TypeChecker:
         
         # NEW: Modules
         self.modules: Dict[str, ModDecl] = {}
+        
+        # NEW: Borrow Checker
+        self.borrow_stack: List[List[Symbol]] = [[]]
 
     def check(self, program: Program, prefix: str = ""):
         old_prefix = self.current_module_prefix
@@ -292,8 +301,37 @@ class TypeChecker:
             self._check_let(stmt)
         elif isinstance(stmt, ExprStmt):
             self._check_expr(stmt.expression)
+        elif isinstance(stmt, AssignmentStmt):
+            self._check_assignment(stmt)
         elif isinstance(stmt, ReturnStmt):
             self._check_return_stmt(stmt)
+
+    def _check_assignment(self, stmt: AssignmentStmt):
+        target_type = self._check_expr(stmt.target)
+        value_type = self._check_expr(stmt.value)
+        
+        if target_type == "error" or value_type == "error":
+            return
+            
+        if target_type != value_type:
+            self.diagnostics.error(f"Type mismatch in assignment: cannot assign '{value_type}' to '{target_type}'", stmt.value.span)
+            return
+
+        # Mutability check
+        if isinstance(stmt.target, VariableExpr):
+            symbol = self._resolve_path(stmt.target.path, span=stmt.target.span)
+            if symbol and not symbol.is_mutable:
+                self.diagnostics.error(f"Cannot assign to immutable variable '{'::'.join(stmt.target.path)}'", stmt.target.span)
+        elif isinstance(stmt.target, DereferenceExpr):
+            # Check if it's a mutable reference
+            ref_type = self._check_expr(stmt.target.target)
+            if not ref_type.startswith("&mut "):
+                self.diagnostics.error(f"Cannot assign to immutable reference '{ref_type}'", stmt.target.span)
+        else:
+            self.diagnostics.error("Invalid assignment target", stmt.target.span)
+
+        # Consume value (ownership transfer)
+        self._consume_value(stmt.value)
 
     def _check_return_stmt(self, stmt: ReturnStmt):
         if stmt.value:
@@ -305,6 +343,9 @@ class TypeChecker:
                     f"Type mismatch: expected return type '{self.current_function_return_type}', got '{return_type}'",
                     stmt.value.span
                 )
+            
+            # Consume returned value
+            self._consume_value(stmt.value)
         else:
             if self.current_function_return_type != "void":
                 self.diagnostics.error(
@@ -329,8 +370,11 @@ class TypeChecker:
             if final_type == "void":
                  self.diagnostics.error("Cannot bind variable to void expression", stmt.span)
 
-        if not self.current_scope.define(stmt.name, final_type, stmt.span):
+        if not self.current_scope.define(stmt.name, final_type, stmt.span, is_mutable=stmt.is_mutable):
             self.diagnostics.error(f"Variable '{stmt.name}' is already defined in this scope", stmt.span)
+        
+        # Consume initializer
+        self._consume_value(stmt.initializer)
 
     def _check_expr(self, expr: Expr) -> str:
         """Wrapper to populate inferred_type"""
@@ -384,6 +428,16 @@ class TypeChecker:
             
             # Store resolved name for IR generation
             expr.resolved_name = symbol.full_name if symbol.full_name else "::".join(expr.path)
+            
+            # Check if variable has been moved
+            if symbol.is_moved:
+                self.diagnostics.error(f"Use of moved value '{'::'.join(expr.path)}'", expr.span)
+                return "error"
+            
+            # Check if variable is mutably borrowed
+            if symbol.has_mutable_borrow:
+                self.diagnostics.error(f"Cannot use '{'::'.join(expr.path)}' while it is mutably borrowed", expr.span)
+                return "error"
             
             return symbol.type
 
@@ -441,6 +495,12 @@ class TypeChecker:
         if isinstance(expr, MatchExpr):
             return self._check_match(expr)
 
+        if isinstance(expr, BorrowExpr):
+            return self._check_borrow_expr(expr)
+        
+        if isinstance(expr, DereferenceExpr):
+            return self._check_dereference_expr(expr)
+
         if isinstance(expr, CallExpr):
             return self._check_call_expr(expr)
 
@@ -493,6 +553,9 @@ class TypeChecker:
                     f"Argument type mismatch for '{param_name}'. Expected '{param_type}', got '{arg_type}'",
                     arg_expr.span
                 )
+            
+            # Consume argument
+            self._consume_value(arg_expr)
         
         # Store the resolved name for IR generation
         expr.resolved_name = lookup_name
@@ -763,23 +826,31 @@ class TypeChecker:
 
     def _enter_scope(self):
         self.current_scope = SymbolTable(self.current_scope)
+        self.borrow_stack.append([])
 
     def _exit_scope(self):
+        # Release all borrows in this scope
+        for symbol in self.borrow_stack.pop():
+            if symbol.has_mutable_borrow:
+                symbol.has_mutable_borrow = False
+            elif symbol.immutable_borrows > 0:
+                symbol.immutable_borrows -= 1
+        
         self.current_scope = self.current_scope.parent
     
     # --- Generic Type System Helpers ---
     
     def _typeref_to_string(self, type_ref: TypeRef) -> str:
-        """Convert TypeRef to string representation like 'Box<int>' or 'Option<T>'"""
-        name = "::".join(type_ref.path)
-        if name == "Self" and self.current_self_type:
-            return self.current_self_type
-            
-        if not type_ref.type_args:
-            return name
+        """Convert TypeRef to its string representation (e.g., Box<int>, &mut string)"""
+        base = "::".join(type_ref.path)
+        if type_ref.type_args:
+            args = [self._typeref_to_string(arg) for arg in type_ref.type_args]
+            base = f"{base}<{', '.join(args)}>"
         
-        args_str = ', '.join(self._typeref_to_string(arg) for arg in type_ref.type_args)
-        return f"{name}<{args_str}>"
+        if type_ref.is_reference:
+            prefix = "&mut " if type_ref.is_mutable else "&"
+            return f"{prefix}{base}"
+        return base
     
     def _check_type_ref(self, type_ref: TypeRef) -> str:
         """
@@ -812,7 +883,7 @@ class TypeChecker:
                     f"Primitive type '{name}' cannot have type arguments",
                     type_ref.span
                 )
-            return name
+            return self._typeref_to_string(type_ref)
         
         # Is it a struct?
         if name in self.struct_schemas:
@@ -854,17 +925,15 @@ class TypeChecker:
                 )
             
             # Check arguments recursively
+            arg_types = []
             for arg in type_ref.type_args:
-                self._check_type_ref(arg)
+                arg_types.append(self._check_type_ref(arg))
                 
             # Track instantiation for monomorphization
             if type_ref.type_args:
-                if name not in self.generic_instances:
-                    self.generic_instances[name] = set()
-                
-                # Convert args to string tuple for storage
-                arg_tuple = tuple(self._typeref_to_string(arg) for arg in type_ref.type_args)
-                self.generic_instances[name].add(arg_tuple)
+                if name not in self.monomorphizations:
+                    self.monomorphizations[name] = set()
+                self.monomorphizations[name].add(tuple(arg_types))
                 
             return self._typeref_to_string(type_ref)
             
@@ -975,6 +1044,56 @@ class TypeChecker:
         # Otherwise just convert to string (handles concrete types)
         return self._typeref_to_string(type_ref)
     
+    def _check_borrow_expr(self, expr: BorrowExpr) -> str:
+        target_type = self._check_expr(expr.target)
+        if target_type == "error":
+            return "error"
+        
+        if isinstance(expr.target, VariableExpr):
+            symbol = self._resolve_path(expr.target.path, span=expr.target.span)
+            if symbol:
+                if expr.is_mutable:
+                    if symbol.has_mutable_borrow or symbol.immutable_borrows > 0:
+                        self.diagnostics.error(f"Cannot mutably borrow '{'::'.join(expr.target.path)}' because it is already borrowed", expr.span)
+                        return "error"
+                    symbol.has_mutable_borrow = True
+                else:
+                    if symbol.has_mutable_borrow:
+                        self.diagnostics.error(f"Cannot borrow '{'::'.join(expr.target.path)}' as immutable because it is mutably borrowed", expr.span)
+                        return "error"
+                    symbol.immutable_borrows += 1
+                
+                # Track for release
+                self.borrow_stack[-1].append(symbol)
+        
+        prefix = "&mut " if expr.is_mutable else "&"
+        return f"{prefix}{target_type}"
+
+    def _check_dereference_expr(self, expr: DereferenceExpr) -> str:
+        target_type = self._check_expr(expr.target)
+        if target_type == "error":
+            return "error"
+        
+        if not target_type.startswith("&"):
+            self.diagnostics.error(f"Cannot dereference non-reference type '{target_type}'", expr.span)
+            return "error"
+        
+        # Strip & or &mut 
+        if target_type.startswith("&mut "):
+            return target_type[5:]
+        return target_type[1:]
+
     def _exit_type_param_scope(self, old_params: Dict[str, TypeParameter]):
         """Restore previous type parameter scope"""
         self.type_params = old_params
+
+    def _is_copy_type(self, type_name: str) -> bool:
+        """Primitive types like int and bool are Copy types."""
+        return type_name in {"int", "bool"}
+
+    def _consume_value(self, expr: Expr):
+        """Mark a variable as moved if it's not a Copy type."""
+        if isinstance(expr, VariableExpr):
+            symbol = self._resolve_path(expr.path, span=expr.span)
+            if symbol and not self._is_copy_type(symbol.type):
+                symbol.is_moved = True

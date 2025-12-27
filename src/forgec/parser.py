@@ -11,7 +11,9 @@ from forgec.ast_nodes import (
     TypeParameter, TypeRef,
     TraitDef, ImplBlock, TraitMethod,
     ModDecl, UseDecl,  # NEW
-    ExternBlock, ExternFunc # NEW
+    ExternBlock, ExternFunc, # NEW
+    BorrowExpr, DereferenceExpr, # NEW
+    AssignmentStmt # NEW
 )
 
 class Parser:
@@ -145,7 +147,7 @@ class Parser:
         if self._match(TokenType.SELF):
             # Treat 'self' as a parameter named "self" with type "Self"
             # In a real compiler, we'd handle this more specifically
-            params.append(("self", TypeRef(start_token.span, "Self", [])))
+            params.append(("self", TypeRef(start_token.span, ["Self"], [])))
             if self._check(TokenType.COMMA):
                 self._advance()
         
@@ -161,7 +163,7 @@ class Parser:
         
         self._consume(TokenType.RPAREN, "Expected ')' after parameters")
         
-        return_type = TypeRef(start_token.span, "void", [])
+        return_type = TypeRef(start_token.span, ["void"], [])
         if self._match(TokenType.ARROW):
             return_type = self._parse_type_ref()
             
@@ -249,7 +251,7 @@ class Parser:
         params = []
         # First parameter must be 'self'
         if self._match(TokenType.SELF):
-            params.append(("self", TypeRef(start_token.span, "Self", [])))
+            params.append(("self", TypeRef(start_token.span, ["Self"], [])))
             if self._check(TokenType.COMMA):
                 self._advance()
         
@@ -265,7 +267,7 @@ class Parser:
         
         self._consume(TokenType.RPAREN, "Expected ')'")
         
-        return_type = TypeRef(start_token.span, "void", [])
+        return_type = TypeRef(start_token.span, ["void"], [])
         if self._match(TokenType.ARROW):
             return_type = self._parse_type_ref()
         
@@ -299,27 +301,29 @@ class Parser:
         statements = []
         while not self._check(TokenType.RBRACE) and not self._is_at_end():
             try:
-                if self._match(TokenType.LET):
-                    statements.append(self._let_declaration())
-                elif self._match(TokenType.RETURN):
-                    statements.append(self._return_stmt())
+                # Handle implicit return (last expression without semicolon)
+                # We need to peek ahead or try parsing and backtrack?
+                # Simplified: if it's an expression and the next token is RBRACE, it's implicit return.
+                
+                if self._check(TokenType.LET) or self._check(TokenType.RETURN):
+                    statements.append(self._declaration())
                 else:
                     expr = self._expression()
                     
-                    # Check for implicit return (last expression in block)
-                    if self._check(TokenType.RBRACE):
+                    if self._match(TokenType.EQ):
+                        # Assignment
+                        value = self._expression()
+                        self._consume(TokenType.SEMICOLON, "Expected ';' after assignment")
+                        span = Span(expr.span.start, value.span.end, expr.span.line, 0)
+                        statements.append(AssignmentStmt(span, expr, value))
+                    elif self._match(TokenType.SEMICOLON):
+                        # Regular expression statement
                         statements.append(ExprStmt(expr.span, expr))
-                        break # Done
-                    
-                    # Check for optional semicolon for block expressions (if, match)
-                    if isinstance(expr, (IfExpr, MatchExpr)):
-                        # Optional semicolon
-                        self._match(TokenType.SEMICOLON)
+                    elif self._check(TokenType.RBRACE):
+                        # Implicit return
                         statements.append(ExprStmt(expr.span, expr))
                     else:
-                        # Mandatory semicolon for other expressions
                         self._consume(TokenType.SEMICOLON, "Expected ';' after expression")
-                        statements.append(ExprStmt(expr.span, expr))
             except ParseError:
                 self._synchronize()
                     
@@ -328,7 +332,8 @@ class Parser:
 
     def _declaration(self) -> Stmt:
         try:
-            if self._match(TokenType.LET):
+            if self._check(TokenType.LET):
+                self._advance()
                 return self._let_declaration()
             return self._statement()
         except ParseError:
@@ -337,6 +342,7 @@ class Parser:
 
     def _let_declaration(self) -> Stmt:
         start_token = self.tokens[self.current - 1]
+        is_mutable = self._match(TokenType.MUT)
         name = self._consume(TokenType.IDENTIFIER, "Expected variable name").lexeme
         
         type_annotation = None
@@ -348,12 +354,21 @@ class Parser:
         self._consume(TokenType.SEMICOLON, "Expected ';' after variable declaration")
         
         span = Span(start_token.span.start, self.tokens[self.current-1].span.end, start_token.span.line, 0)
-        return LetStmt(span, name, initializer, type_annotation)
+        return LetStmt(span, name, initializer, type_annotation, is_mutable)
 
     def _statement(self) -> Stmt:
         if self._match(TokenType.RETURN):
             return self._return_stmt()
+        
         expr = self._expression()
+        
+        # Handle assignment: expr = value;
+        if self._match(TokenType.EQ):
+            value = self._expression()
+            self._consume(TokenType.SEMICOLON, "Expected ';' after assignment")
+            span = Span(expr.span.start, value.span.end, expr.span.line, 0)
+            return AssignmentStmt(span, expr, value)
+            
         self._consume(TokenType.SEMICOLON, "Expected ';' after expression")
         return ExprStmt(expr.span, expr)
 
@@ -399,12 +414,28 @@ class Parser:
         return expr
 
     def _factor(self) -> Expr:
-        expr = self._postfix()
+        expr = self._unary()
         while self._match(TokenType.SLASH, TokenType.STAR):
             operator = self.tokens[self.current - 1].lexeme
-            right = self._postfix()
+            right = self._unary()
             expr = BinaryExpr(Span(expr.span.start, right.span.end, expr.span.line, 0), expr, operator, right)
         return expr
+
+    def _unary(self) -> Expr:
+        if self._match(TokenType.AMPERSAND):
+            start_token = self.tokens[self.current-1]
+            is_mutable = self._match(TokenType.MUT)
+            target = self._unary()
+            span = Span(start_token.span.start, target.span.end, target.span.line, 0)
+            return BorrowExpr(span, target, is_mutable)
+        
+        if self._match(TokenType.STAR):
+            start_token = self.tokens[self.current-1]
+            target = self._unary()
+            span = Span(start_token.span.start, target.span.end, target.span.line, 0)
+            return DereferenceExpr(span, target)
+            
+        return self._postfix()
 
     def _postfix(self) -> Expr:
         expr = self._primary()
@@ -639,13 +670,19 @@ class Parser:
     def _is_at_end(self) -> bool:
         return self.tokens[self.current].type == TokenType.EOF
 
+    def _peek(self) -> Token:
+        return self.tokens[self.current]
+
+    def _previous(self) -> Token:
+        return self.tokens[self.current - 1]
+
     def _consume(self, type: TokenType, message: str) -> Token:
         if self._check(type):
             return self._advance()
-        raise self._error(message)
+        
+        raise self._error(self.tokens[self.current], message)
 
-    def _error(self, message: str) -> Exception:
-        token = self.tokens[self.current]
+    def _error(self, token: Token, message: str) -> Exception:
         self.diagnostics.error(message, token.span)
         return ParseError()
 
@@ -694,7 +731,18 @@ class Parser:
         return params
     
     def _parse_type_ref(self) -> TypeRef:
-        """Parse type reference: int, Box<int>, Option<Box<bool>>. Handles nested generics."""
+        """Parse type reference: int, &int, &mut int, Box<int>, Option<Box<bool>>."""
+        if self._match(TokenType.AMPERSAND):
+            start_span = self.tokens[self.current-1].span
+            is_mutable = self._match(TokenType.MUT)
+            
+            # Recursively parse the base type
+            base_type = self._parse_type_ref()
+            base_type.is_reference = True
+            base_type.is_mutable = is_mutable
+            base_type.span = Span(start_span.start, base_type.span.end, start_span.line, 0)
+            return base_type
+
         start_token = self._consume(TokenType.IDENTIFIER, "Expected type name")
         path = [start_token.lexeme]
         

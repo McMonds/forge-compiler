@@ -20,6 +20,8 @@ class TypeRef(ASTNode):
     """Reference to a type (possibly generic)"""
     path: List[str]                     # e.g., ["std", "Box"], ["int"], ["T"]
     type_args: List['TypeRef']          # e.g., [TypeRef("int")] for Box<int>
+    is_reference: bool = False          # NEW: &T
+    is_mutable: bool = False            # NEW: &mut T
     resolved_name: Optional[str] = None # Populated by TypeChecker
     
     def __str__(self) -> str:
@@ -43,6 +45,15 @@ class LiteralExpr(Expr):
 class VariableExpr(Expr):
     path: List[str] # e.g., ["math", "PI"] or ["x"]
     resolved_name: Optional[str] = None # NEW: Populated by TypeChecker
+
+@dataclass
+class BorrowExpr(Expr):
+    target: Expr
+    is_mutable: bool
+
+@dataclass
+class DereferenceExpr(Expr):
+    target: Expr
 
 @dataclass
 class BinaryExpr(Expr):
@@ -78,6 +89,12 @@ class LetStmt(Stmt):
     name: str
     initializer: Expr
     type_annotation: Optional[str] = None
+    is_mutable: bool = False # NEW
+
+@dataclass
+class AssignmentStmt(Stmt): # NEW
+    target: Expr
+    value: Expr
 
 @dataclass
 class ExprStmt(Stmt):

@@ -1,0 +1,17 @@
+fn consume_string(s: string) {
+    // s is moved here
+}
+
+fn main() -> int {
+    let x = "Hello";
+    consume_string(x); // x is moved
+    
+    // This should be an error:
+    consume_string(x); 
+    
+    let a = 10;
+    let b = a; // a is Copy, so it's not moved
+    let c = a + b; // This is fine
+    
+    return 0;
+}

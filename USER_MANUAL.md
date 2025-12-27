@@ -1,6 +1,6 @@
 # Forge User Manual
 
-**Version 0.2.0** | **Last Updated: December 2024**
+**Version 0.5.0** | **Last Updated: December 2024**
 
 Welcome to **Forge**, a modern statically-typed compiled programming language designed for building robust, efficient software. This manual will guide you through installation, language features, and practical usage.
 
@@ -24,6 +24,7 @@ Welcome to **Forge**, a modern statically-typed compiled programming language de
 14. [Generics](#14-generics)
 15. [Traits](#15-traits)
 16. [Module System](#16-module-system)
+17. [Memory Safety](#17-memory-safety)
 
 ---
 
@@ -1265,5 +1266,66 @@ fn main() {
 
 ---
 
-**Forge User Manual v0.4.0**  
+## 20. Memory Safety
+
+Forge ensures memory safety through a system of ownership and borrowing, similar to Rust.
+
+### 20.1 Ownership
+
+Each value in Forge has a single owner. When the owner goes out of scope, the value is dropped.
+
+```rust
+fn main() {
+    let s = "hello"; // s is the owner
+} // s goes out of scope, memory is freed
+```
+
+### 20.2 Move Semantics
+
+When a non-copy type (like a string or a struct) is assigned to another variable or passed to a function, ownership is **moved**.
+
+```rust
+fn consume(s: string) { /* ... */ }
+
+fn main() {
+    let s1 = "data";
+    let s2 = s1; // s1 is moved to s2
+    // consume(s1); // ERROR: s1 is no longer valid
+    consume(s2); // OK: s2 owns the data
+}
+```
+
+### 20.3 Borrowing
+
+You can access data without taking ownership by using **references**.
+
+- **Immutable References (`&T`)**: Allow reading data. Multiple immutable references can exist at once.
+- **Mutable References (`&mut T`)**: Allow modifying data. Only one mutable reference can exist at a time, and no other references (immutable or mutable) can exist simultaneously.
+
+```rust
+fn main() {
+    let mut x = 10;
+    
+    let r1 = &x;
+    let r2 = &x; // OK: Multiple immutable borrows
+    
+    // let r3 = &mut x; // ERROR: Cannot mutably borrow while immutably borrowed
+}
+```
+
+### 20.4 Dereferencing
+
+Use the `*` operator to access or modify the value pointed to by a reference.
+
+```rust
+fn main() {
+    let mut x = 10;
+    let r = &mut x;
+    *r = 20; // Modify x through the reference
+}
+```
+
+---
+
+**Forge User Manual v0.5.0**  
 *Last Updated: December 2024*

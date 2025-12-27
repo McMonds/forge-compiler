@@ -24,6 +24,7 @@ class TokenType(Enum):
     USE = auto()
     PUB = auto()
     EXTERN = auto()
+    MUT = auto()
 
     # Literals
     INTEGER = auto()
@@ -47,6 +48,7 @@ class TokenType(Enum):
     RBRACE = auto()    # }
     COLON = auto()     # :
     COLONCOLON = auto() # ::
+    AMPERSAND = auto()
     SEMICOLON = auto() # ;
     COMMA = auto()     # ,
     ARROW = auto()     # ->
@@ -92,6 +94,7 @@ class Lexer:
             (TokenType.USE, r'\buse\b'),
             (TokenType.PUB, r'\bpub\b'),
             (TokenType.EXTERN, r'\bextern\b'),
+            (TokenType.MUT, r'\bmut\b'),
             
             (TokenType.FATARROW, r'=>'),
             (TokenType.ARROW, r'->'),
@@ -109,6 +112,7 @@ class Lexer:
             (TokenType.LBRACE, r'\{'),
             (TokenType.RBRACE, r'\}'),
             (TokenType.COLONCOLON, r'::'),
+            (TokenType.AMPERSAND, r'&'),
             (TokenType.COLON, r':'),
             (TokenType.SEMICOLON, r';'),
             (TokenType.COMMA, r','),

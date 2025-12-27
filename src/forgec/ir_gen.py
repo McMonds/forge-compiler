@@ -8,7 +8,9 @@ from forgec.ast_nodes import (
     MatchExpr, EnumPattern,
     TypeParameter, TypeRef,
     ImplBlock,
-    ExternBlock, ExternFunc # NEW
+    ExternBlock, ExternFunc, # NEW
+    BorrowExpr, DereferenceExpr, # NEW
+    AssignmentStmt # NEW
 )
 from forgec.diagnostics import DiagnosticEngine
 
@@ -238,6 +240,8 @@ class IRGenerator:
             self._gen_let(stmt)
         elif isinstance(stmt, ExprStmt):
             self._gen_expr(stmt.expression)
+        elif isinstance(stmt, AssignmentStmt):
+            self._gen_assignment(stmt)
         elif isinstance(stmt, ReturnStmt):
             self._gen_return_stmt(stmt)
 
@@ -247,6 +251,11 @@ class IRGenerator:
             self.builder.ret(val)
         else:
             self.builder.ret_void()
+
+    def _gen_assignment(self, stmt: AssignmentStmt):
+        target_ptr = self._gen_addr(stmt.target)
+        value = self._gen_expr(stmt.value)
+        self.builder.store(value, target_ptr)
 
     def _gen_let(self, stmt: LetStmt):
         # Calculate initializer value
@@ -339,7 +348,55 @@ class IRGenerator:
         if isinstance(expr, MethodCallExpr):
             return self._gen_method_call_expr(expr)
 
+        if isinstance(expr, BorrowExpr):
+            return self._gen_addr(expr.target)
+        
+        if isinstance(expr, DereferenceExpr):
+            ptr = self._gen_expr(expr.target)
+            # The type of ptr is already a pointer to the base type
+            return self.builder.load(ptr, name="deref")
+
         return ir.Constant(self.int_type, 0) # Fallback
+
+    def _gen_addr(self, expr: Expr) -> ir.Value:
+        """Get the address of an expression (L-value)."""
+        if isinstance(expr, VariableExpr):
+            if len(expr.path) == 1 and expr.path[0] in self.func_symtab:
+                return self.func_symtab[expr.path[0]]
+            if expr.resolved_name and expr.resolved_name in self.module.globals:
+                return self.module.globals[expr.resolved_name]
+        
+        if isinstance(expr, FieldAccessExpr):
+            struct_ptr = self._gen_addr(expr.struct_expr)
+            # ... (need to implement field GEP here if not already)
+            # For now, let's assume we can get the addr of a field
+            return self._gen_field_addr(expr)
+            
+        if isinstance(expr, DereferenceExpr):
+            # Address of *p is just p
+            return self._gen_expr(expr.target)
+            
+        raise Exception(f"Cannot take address of expression: {expr}")
+
+    def _gen_field_addr(self, expr: FieldAccessExpr) -> ir.Value:
+        # Simplified field address generation
+        struct_ptr = self._gen_addr(expr.struct_expr)
+        struct_type = struct_ptr.type.pointee
+        
+        # Find field index
+        # We need the struct name to look up the schema
+        # This is a bit tricky without more info in FieldAccessExpr
+        # Let's assume TypeChecker populated it
+        struct_name = expr.struct_type_name
+        struct_def = self.struct_defs[struct_name]
+        
+        field_idx = -1
+        for i, (name, _) in enumerate(struct_def.fields):
+            if name == expr.field_name:
+                field_idx = i
+                break
+        
+        return self.builder.gep(struct_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), field_idx)])
 
     def _gen_struct_instantiation(self, expr: StructInstantiationExpr) -> ir.Value:
         struct_name = expr.resolved_name if expr.resolved_name else "::".join(expr.struct_path)

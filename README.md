@@ -25,7 +25,7 @@
 
 ## ✨ Features
 
-Forge is currently in **Phase IV (Complete)**, offering a powerful type system with generics, traits, a robust module system, strings, C FFI, and a basic standard library.
+Forge is currently in **Phase V (Foundation Complete)**, offering a powerful type system with generics, traits, a robust module system, and a modern **Memory Safety** model with ownership and borrowing.
 
 ### 🛡️ Static Type System
 - **Strong Type Checking**: All types verified at compile time
@@ -95,18 +95,35 @@ fn identity<T>(x: T) -> T {
 ```
 
 ### 📜 Traits & Implementations
-Define shared behavior with traits and implement them for any type.
-
 ```rust
 trait Display {
-    fn show(self) -> int;
+    fn to_string(self) -> string;
 }
 
 impl Display for Point {
-    fn show(self) -> int {
-        self.x + self.y
+    fn to_string(self) -> string {
+        "Point"
     }
 }
+```
+
+### 🛡️ Memory Safety (Phase V)
+Forge implements a modern memory safety model inspired by Rust, ensuring safety without a garbage collector.
+
+**Ownership & Move Semantics**
+Non-copy types are moved by default, preventing use-after-free.
+```rust
+let s1 = "hello";
+let s2 = s1; // s1 is moved to s2
+// print(s1); // Compile error: Use of moved value 's1'
+```
+
+**Borrowing**
+Access data without taking ownership using references.
+```rust
+let mut x = 10;
+let r1 = &x;     // Immutable borrow
+let r2 = &mut x; // Mutable borrow (only one allowed at a time)
 ```
 
 ### 📦 Module System & Visibility
@@ -706,38 +723,33 @@ forge/
 | **II. Type System** | ✅ **Complete** | Structs, Enums, Pattern Matching | Q4 2024 |
 | **III. Abstractions** | ✅ **Complete** | Generics, Traits, Module System, Visibility | Q1 2025 |
 | **IV. Practicality** | ✅ **Complete** | Strings, C FFI, Basic I/O | Q1 2025 |
-| **V. Safety** | 📅 **Planned** | Borrow Checker, Memory Safety | Q2 2025 |
+| **V. Safety** | 🏗️ **Foundation** | Ownership, Borrow Checker, Mutability | Q2 2025 |
 | **VI. Performance** | 📅 **Planned** | Optimization Passes, SIMD | Q3 2025 |
 
-### Phase V: Safety (Next)
+### Phase V: Safety (In Progress)
 
-**Generics:**
+**Ownership & Borrowing:**
 ```rust
-struct Box<T> {
-    value: T
-}
-
-enum Option<T> {
-    Some(T),
-    None
-}
-
-fn map<T, U>(opt: Option<T>, f: fn(T) -> U) -> Option<U> {
-    match opt {
-        Option::Some(val) => { Option::Some(f(val)) },
-        Option::None => { Option::None }
+fn main() -> int {
+    let mut x = 10;
+    {
+        let r = &mut x;
+        *r = 20; // Update through reference
     }
+    x // x is now 20
 }
 ```
 
-**Traits:**
+**Move Semantics:**
 ```rust
-trait Display {
-    fn to_string(self) -> String;
-}
+fn consume(s: string) { /* ... */ }
 
-impl Display for Point {
-    fn to_string(self) -> String {
+fn main() {
+    let s = "data";
+    consume(s); // s is moved
+    // consume(s); // Error: s is already moved
+}
+```
         // ...
     }
 }

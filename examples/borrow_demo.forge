@@ -1,0 +1,15 @@
+fn main() -> int {
+    let x = 10;
+    let r1 = &x;
+    let r2 = &x; // Multiple immutable borrows are fine
+    
+    let y = *r1 + *r2;
+    
+    let mut a = 20;
+    let b = &mut a;
+    let c = &a; // This should be an error if uncommented
+    
+    *b = 30;
+    
+    return 0;
+}
